@@ -1,0 +1,80 @@
+---
+title: "helm upgrade does not restart existing StatefulSet pods when the pod template changes"
+date: 2026-03-04
+tags: [kubernetes, helm, statefulset]
+---
+
+# helm upgrade does not restart existing StatefulSet pods when the pod template changes
+
+I changed a resource limit in a Helm values file (worker memory: 1Gi → 3Gi),
+ran `helm upgrade`, watched Terraform report success, then watched the pods
+keep getting OOMKilled. Confused, I checked the pod spec and it still said 1Gi.
+
+## What's happening
+
+`helm upgrade` updates the StatefulSet's pod template spec in Kubernetes. But
+Kubernetes StatefulSets with `RollingUpdate` strategy (the default) only apply
+the updated template to **new pods**, not to running ones. Existing pods keep
+running with the old spec until they're deleted and recreated.
+
+So the flow is:
+1. `helm upgrade` → StatefulSet spec updated in K8s (now says 3Gi)
+2. Existing pods are still running with the old spec (still 1Gi)
+3. You delete the pods → StatefulSet controller creates new pods using the
+   updated 3Gi spec
+
+You can verify the StatefulSet has been updated but pods are still old:
+
+```bash
+# StatefulSet says 3Gi
+kubectl get statefulset airflow-worker -n airflow \
+  -o jsonpath='{.spec.template.spec.containers[0].resources.limits.memory}'
+# → 3Gi
+
+# But running pod still says 1Gi
+kubectl get pod airflow-worker-0 -n airflow \
+  -o jsonpath='{.spec.containers[0].resources.limits.memory}'
+# → 1Gi
+```
+
+## The fix
+
+Delete the pods after `helm upgrade`. StatefulSet will recreate them with the
+new spec:
+
+```bash
+kubectl delete pod airflow-worker-0 airflow-worker-1 -n airflow \
+  --context k3d-cluster-a
+kubectl delete pod airflow-worker-0 airflow-worker-1 -n airflow \
+  --context k3d-cluster-b
+```
+
+Or if you want to do it cleanly via rollout:
+```bash
+kubectl rollout restart statefulset/airflow-worker -n airflow \
+  --context k3d-cluster-a
+```
+
+## Why this catches you off guard
+
+Deployments (non-stateful) update pods automatically via rolling update as soon
+as the spec changes — you're used to seeing pods cycle after a `helm upgrade`.
+StatefulSets are more conservative by design (they manage stateful workloads
+where pod identity matters), so the rollout behavior is different.
+
+The Helm upgrade "succeeded" because the StatefulSet manifest was correctly
+updated in Kubernetes. Helm's `--wait` flag would normally block until the
+rollout completes, but if `--wait` isn't used or the StatefulSet update is
+detected as complete (because the existing pods still match the old replicas
+count), it returns success.
+
+## Bonus: checking the actual running memory limit after OOMKill
+
+```bash
+kubectl get pod airflow-worker-0 -n airflow -o json \
+  | jq '.status.containerStatuses[] | {name: .name, reason: .lastState.terminated.reason, restarts: .restartCount}'
+# → {"name": "worker", "reason": "OOMKilled", "restarts": 8}
+```
+
+If `reason` is `OOMKilled`, the container hit its memory limit. Check both the
+pod spec AND the StatefulSet spec to make sure they match after a Helm upgrade.

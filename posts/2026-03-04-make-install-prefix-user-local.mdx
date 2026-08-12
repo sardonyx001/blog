@@ -1,0 +1,33 @@
+---
+title: "make install PREFIX installs everything under one directory, not just the binary"
+date: 2026-03-04
+tags: [make, linux, cli]
+---
+
+# make install PREFIX installs everything under one directory, not just the binary
+
+I wanted to install a locally-built btop++ into `~/.local/bin` without touching `/usr/local` or needing sudo. I knew `make install PREFIX=...` existed but I always thought of it as mostly moving the binary. Turns out it does a lot more.
+
+Running:
+
+```sh
+make install PREFIX="$HOME/.local"
+```
+
+produced:
+
+```
+Installing binary to:        ~/.local/bin/btop
+Installing doc to:           ~/.local/share/doc/btop
+Installing themes to:        ~/.local/share/btop/themes
+Installing desktop entry to: ~/.local/share/applications/btop.desktop
+Installing PNG icon to:      ~/.local/share/icons/hicolor/48x48/apps/btop.png
+Installing SVG icon to:      ~/.local/share/icons/hicolor/scalable/apps/btop.svg
+Installing man page to:      ~/.local/share/man/man1/btop.1
+```
+
+Everything lands under the same prefix, following the XDG layout (`bin/`, `share/doc/`, `share/man/`, etc.). The man page ends up in `~/.local/share/man/man1/`, which `man` picks up automatically if your `MANPATH` includes `~/.local/share/man` (most distros include it by default).
+
+I think the reason this works cleanly is that GNU Makefile conventions define install paths as `$(PREFIX)/bin`, `$(PREFIX)/share/man/man1`, etc., so every directory is relative to PREFIX. As long as the Makefile follows those conventions, `PREFIX=$HOME/.local` is all you need.
+
+This is the cleanest way to install a source-built tool for a single user — no sudo, no pollution of system directories, and `~/.local/bin` is already on `$PATH` on most Linux systems (and easy to add on macOS).

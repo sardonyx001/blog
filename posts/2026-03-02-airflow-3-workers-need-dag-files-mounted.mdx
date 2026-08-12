@@ -1,0 +1,82 @@
+---
+title: "Airflow 3 CeleryExecutor workers need DAG files mounted on their own pod"
+date: 2026-03-02
+tags: [airflow, kubernetes, celery]
+---
+
+# Airflow 3 CeleryExecutor workers need DAG files mounted on their own pod
+
+I spent a while debugging a situation where Celery workers were receiving tasks,
+reporting success, but tasks were finishing in ~0.05 seconds with
+`final_state=up_for_reschedule` and eventually failing with "stuck in queued". The
+scheduler logs looked fine. The workers were clearly connected to RabbitMQ. Everything
+looked healthy, but no actual task code was running.
+
+## What was happening
+
+In Airflow 3, the execution model is completely different from Airflow 2. When a worker
+receives an `execute_workload` task from Celery, it doesn't just run Python inline — it
+spawns a subprocess via a **supervisor** process that needs to:
+
+1. Find the DAG file on disk
+2. Import it
+3. Execute the specific task function
+
+If the DAG file doesn't exist on the worker's filesystem, the supervisor process exits
+immediately (in ~0.04s) and reports `up_for_reschedule`. This is the Airflow 3 Task SDK
+telling the scheduler "I couldn't run this, please retry". After enough retries the task
+fails with "tries exceeded".
+
+You can spot this in the worker logs by looking for near-zero durations:
+
+```
+Task finished  duration=0.04795833800017135  exit_code=0  final_state=up_for_reschedule
+```
+
+And you can confirm it by checking if the DAGs directory is empty on the worker pod:
+
+```bash
+kubectl exec -n airflow airflow-worker-0 -c worker -- ls /opt/airflow/dags/
+# (empty output = problem)
+```
+
+## The fix
+
+Mount the DAG files on the worker pods. In the Airflow Helm chart, `extraVolumeMounts`
+must be declared **per component** — top-level `extraVolumeMounts` doesn't propagate to
+workers.
+
+```yaml
+workers:
+  extraVolumes:
+    - name: my-dags
+      configMap:
+        name: my-dag-configmap
+  extraVolumeMounts:
+    # Must use subPath for each file — mounting the ConfigMap as a directory
+    # creates Kubernetes atomic-update symlinks that break Airflow's DAG scanner
+    - name: my-dags
+      mountPath: /opt/airflow/dags/my_dag.py
+      subPath: my_dag.py
+    - name: my-dags
+      mountPath: /opt/airflow/dags/another_dag.py
+      subPath: another_dag.py
+```
+
+In Airflow 2 with LocalExecutor, tasks ran as subprocesses of the scheduler, so only the
+scheduler needed DAG files. In Airflow 3 with CeleryExecutor, tasks run as subprocesses
+of the **worker**, so workers need them too.
+
+## The components that need DAG files
+
+In Airflow 3 with CeleryExecutor, make sure DAGs are mounted on all of these:
+
+| Component | Why it needs DAGs |
+|---|---|
+| `dagProcessor` | Parses and serializes DAG definitions |
+| `scheduler` | Schedules task instances |
+| `workers` | **Executes actual task code** (the one I forgot) |
+
+The `triggerer` and `api-server` don't need the DAG files for task execution (they use
+the serialized DB representation), but you'll need plugins mounted on them if your DAGs
+use custom operators or plugins.

@@ -1,0 +1,24 @@
+services:
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - REDIS_URL=redis://redis:6379
+      # point these at a self-hosted Umami instance to enable analytics;
+      # the tracking script is a no-op if NEXT_PUBLIC_UMAMI_WEBSITE_ID is unset
+      - NEXT_PUBLIC_UMAMI_SRC=${NEXT_PUBLIC_UMAMI_SRC:-}
+      - NEXT_PUBLIC_UMAMI_WEBSITE_ID=${NEXT_PUBLIC_UMAMI_WEBSITE_ID:-}
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  redis:
+    image: redis:alpine
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+
+volumes:
+  redis-data:

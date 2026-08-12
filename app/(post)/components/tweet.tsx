@@ -1,5 +1,5 @@
 import { type ReactNode, Suspense } from "react";
-import { Tweet, getTweet } from "react-tweet/api";
+import { type Tweet, getTweet } from "react-tweet/api";
 import {
   EmbeddedTweet,
   TweetNotFound,
@@ -22,15 +22,18 @@ async function getAndCacheTweet(id: string): Promise<Tweet | undefined> {
 
     // @ts-ignore
     if (tweet && !tweet.tombstone) {
-      // we populate the cache if we have a fresh tweet
-      await redis.set(`tweet:${id}`, tweet);
+      // we populate the cache if we have a fresh tweet — ioredis (unlike
+      // @upstash/redis) doesn't auto-serialize objects, so JSON.stringify
+      // explicitly on write and JSON.parse on read below
+      await redis.set(`tweet:${id}`, JSON.stringify(tweet));
       return tweet;
     }
   } catch (error) {
     console.error("tweet fetch error", error);
   }
 
-  const cachedTweet: Tweet | null = await redis.get(`tweet:${id}`);
+  const cachedRaw = await redis.get(`tweet:${id}`);
+  const cachedTweet: Tweet | null = cachedRaw ? JSON.parse(cachedRaw) : null;
 
   // @ts-ignore
   if (!cachedTweet || cachedTweet.tombstone) return undefined;

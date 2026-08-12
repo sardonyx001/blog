@@ -1,0 +1,60 @@
+---
+title: "git filter-repo is the modern replacement for filter-branch for rewriting commit history"
+date: 2026-03-06
+tags: [git, productivity]
+---
+
+# git filter-repo is the modern replacement for filter-branch for rewriting commit history
+
+I needed to add a Jira ticket reference like `[PROJ-1234]` to every commit message on a branch after the fact. My first instinct was `git filter-branch --msg-filter`, which works but is slow, leaves backup refs in `refs/original/`, and git itself now warns you to use something else.
+
+The right tool is `git filter-repo`. It's a Python script (`pip install git-filter-repo`), much faster, and doesn't leave a mess behind.
+
+## Adding a ticket reference to all commit messages on a branch
+
+```bash
+git filter-repo --force \
+  --message-callback '
+    import re
+    return re.sub(rb"^(\w.*?): ", rb"\1: [TICKET-123] ", message, count=1)
+  '
+```
+
+Two things surprised me here:
+
+1. **`message` is `bytes`, not `str`** — filter-repo passes the raw bytes from the git object, so you need `rb"..."` raw byte strings and `re.sub` from the `re` module (no need to import it, it's already in scope). Using `str` operations will crash.
+
+2. **`count=1`** — this limits the substitution to the first match on the first line. Without it, any `: ` in the commit body (e.g. a URL or code snippet) would also get the ticket reference injected.
+
+## Scoping to only commits on your branch
+
+By default filter-repo rewrites **all** commits in the repo. To limit it to commits ahead of `origin/master`:
+
+```bash
+git filter-repo --force \
+  --refs "$(git merge-base HEAD origin/master)..HEAD" \
+  --message-callback '
+    import re
+    return re.sub(rb"^(\w.*?): ", rb"\1: [TICKET-123] ", message, count=1)
+  '
+```
+
+## Why not filter-branch?
+
+`filter-branch` works but:
+- Forks a shell process per commit — slow on large repos
+- Leaves backup refs in `refs/original/` that you have to clean up manually
+- Git prints a big warning telling you not to use it
+- Not actively maintained
+
+`filter-repo` is [the officially recommended alternative](https://git-scm.com/docs/git-filter-branch#_warning) as of git 2.24+. It's faster, cleaner, and safer.
+
+## After rewriting — force push
+
+History is rewritten so you need a force push:
+
+```bash
+git push --force-with-lease origin HEAD
+```
+
+`--force-with-lease` is safer than `--force` — it refuses to push if someone else has pushed to the remote since you last fetched.

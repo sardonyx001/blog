@@ -1,0 +1,41 @@
+---
+title: "Caddy's handle_path strips the prefix before proxying; handle does not"
+date: 2026-02-25
+tags: [caddy, nginx, reverse-proxy]
+---
+
+# Caddy's handle_path strips the prefix before proxying; handle does not
+
+I was proxying an Astro site behind `/starlight` in Caddy and the page loaded completely broken — no styles, no JavaScript, just raw HTML. Very 1996.
+
+The weird part: every asset request was returning 200. So I thought things were working, but something was clearly wrong. I ran `curl -sI http://localhost/starlight/_astro/index.css | grep Content-Type` and got:
+
+```
+Content-Type: text/html
+```
+
+A CSS file. Returning. As HTML. That's the bug.
+
+Here's what was happening. I had this in my Caddyfile:
+
+```caddyfile
+handle /starlight/* {
+    reverse_proxy starlight:80
+}
+```
+
+It turns out `handle` matches the path but **forwards it unchanged** to the upstream. So when the browser asked for `/starlight/_astro/index.css`, nginx received that exact path — `/starlight/_astro/index.css` — looked for it on disk, didn't find it (the file actually lives at `/_astro/index.css`), and fell through its `try_files` fallback to `index.html`. Which it then returned with `Content-Type: text/html`. 200 OK. The browser got HTML where it expected CSS and just... ignored it.
+
+The fix was one word:
+
+```caddyfile
+handle_path /starlight/* {
+    reverse_proxy starlight:80
+}
+```
+
+`handle_path` strips the matched prefix before forwarding. nginx now gets `/_astro/index.css`, finds the file, serves it as `text/css`. Everything works.
+
+I think what made this so easy to miss is the 200 status code. `try_files` is really good at making "file not found" look like "file found" — if nginx had returned 404 I would have caught it immediately. Instead I had to actually check the Content-Type header on the asset responses to figure out what was going on.
+
+So: if you're reverse-proxying an SPA behind a subpath in Caddy, use `handle_path`, not `handle`. Otherwise the upstream sees the full path including your prefix, which it almost certainly doesn't know about.

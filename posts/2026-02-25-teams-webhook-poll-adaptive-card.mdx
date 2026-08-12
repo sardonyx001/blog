@@ -1,0 +1,54 @@
+---
+title: "Classic Teams webhooks don't work in group chats — you need Power Automate + Adaptive Cards"
+date: 2026-02-25
+tags: [teams, microsoft, webhooks]
+---
+
+# Posting a poll to a Teams group chat via webhook is surprisingly complicated
+
+I wanted to post a poll to a Teams group chat from a script. Turns out there are like four different ways to do this and most of them don't work for group chats!
+
+**what doesn't work**
+
+Classic Incoming Webhooks only work in channels. Not group chats. Dead end.
+
+**what works: Power Automate + Adaptive Cards**
+
+Power Automate Workflows replaced classic webhooks. You create a flow with the "When a Teams webhook request is received" trigger, point it at your group chat, and POST an Adaptive Card to the generated URL:
+
+```bash
+curl -X POST "{your-power-automate-webhook-url}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "message",
+    "attachments": [{
+      "contentType": "application/vnd.microsoft.card.adaptive",
+      "content": {
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "type": "AdaptiveCard",
+        "version": "1.2",
+        "body": [
+          { "type": "TextBlock", "text": "Poll question?", "wrap": true },
+          {
+            "type": "Input.ChoiceSet",
+            "id": "pollAnswer",
+            "style": "expanded",
+            "choices": [
+              { "title": "Option A", "value": "a" },
+              { "title": "Option B", "value": "b" }
+            ]
+          }
+        ],
+        "actions": [{ "type": "Action.Submit", "title": "Vote" }]
+      }
+    }]
+  }'
+```
+
+A `202 Accepted` means it landed.
+
+**the catch with `Action.Submit`**
+
+`Action.Submit` has nowhere to send votes when the card comes from a webhook — they just go nowhere. To actually collect responses, I found you need to replace the submit button with `Action.OpenUrl` pointing at a Microsoft Forms poll. Forms handles collection, Teams handles delivery.
+
+The Microsoft Graph API can post to group chats too, but it needs Azure AD app registration, OAuth, and delegated permissions. Way too much overhead for just posting a message.

@@ -1,0 +1,30 @@
+---
+title: "Use the MCP inspector to test stdio MCP servers interactively"
+date: 2026-03-03
+tags: [mcp, go, debugging]
+---
+
+# Use the MCP inspector to test stdio MCP servers interactively
+
+I was building a Go MCP server using [mcp-go](https://github.com/mark3labs/mcp-go) and wanted to test it without wiring it up to Claude Desktop first. The problem is that stdio MCP servers just hang when you run them directly in a terminal — they're waiting for the MCP protocol handshake on stdin, so you get nothing useful.
+
+Turns out there's an official inspector tool from the MCP project:
+
+```sh
+bunx @modelcontextprotocol/inspector /full/path/to/your/binary
+```
+
+(or `npx` if you're not on bun)
+
+This spins up a local proxy and opens a web UI at `http://localhost:6274` where you can:
+- browse all tools the server registered
+- fill in arguments and call them interactively
+- see the raw JSON responses
+
+A couple of gotchas I hit:
+
+**Pass the full path to the binary.** The inspector spawns the process itself (it's not a shell), so it won't find the binary if you just give it a bare name like `my-mcp-server`. I got `ENOENT` until I used the absolute path.
+
+**`mcp-go` doesn't ship an inspector.** I tried `go run github.com/mark3labs/mcp-go/cmd/mcpinspector@latest` based on a guess and got a "does not contain package" error. The inspector is a separate npm package — `@modelcontextprotocol/inspector` — maintained by the MCP project, not by individual SDK authors.
+
+The inspector is genuinely useful: much faster feedback loop than registering in Claude Desktop and restarting it every time you change something.

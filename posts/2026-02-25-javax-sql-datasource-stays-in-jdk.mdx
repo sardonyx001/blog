@@ -1,0 +1,32 @@
+---
+title: "javax.sql.DataSource doesn't move to jakarta — it's a JDK API, not Java EE"
+date: 2026-02-25
+tags: [java, spring-boot, jakarta]
+---
+
+# `javax.sql.DataSource` doesn't move to `jakarta`
+
+I was migrating a Spring Boot 2 app to Spring Boot 3 and dutifully renamed all `javax.*` imports to `jakarta.*` — including `javax.sql.DataSource`. That broke the build:
+
+```
+package jakarta.sql does not exist
+```
+
+It turns out the Jakarta EE namespace migration only covers APIs that Oracle handed over to the Eclipse Foundation. `javax.sql` is JDBC — it's part of the JDK itself, not Java EE, so it was never part of that handover and was never renamed. `jakarta.sql` simply doesn't exist.
+
+The packages that did move: `javax.servlet`, `javax.persistence`, `javax.validation`, `javax.annotation`, `javax.mail`, `javax.transaction`. Anything that's been in the JDK since forever — `javax.sql`, `javax.crypto`, `javax.net` — stays put.
+
+So even on Spring Boot 3 with Java 17, this is still correct:
+
+```java
+import javax.sql.DataSource;
+```
+
+The dividing line I find useful: did Oracle donate the spec to Eclipse? Then it moved. Is it a JDK API? Then it didn't.
+
+## References
+
+- [Spring Boot 3.0 Migration Guide](https://github.com/spring-projects/spring-boot/wiki/Spring-Boot-3.0-Migration-Guide)
+- [Jakarta EE 9 Release Plan](https://jakartaee.github.io/platform/jakartaee9/JakartaEE9ReleasePlan) — explicitly calls out that Java SE packages are out of scope
+- [Jakarta EE Platform Specification 9](https://jakarta.ee/specifications/platform/9/jakarta-platform-spec-9.html) — full list of specs in scope; JDBC is absent
+- [OpenRewrite: Migrate to Jakarta EE 9](https://docs.openrewrite.org/recipes/java/migrate/jakarta/javaxmigrationtojakarta)

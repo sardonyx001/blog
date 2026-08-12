@@ -1,0 +1,37 @@
+---
+title: "PVCs cannot be shared across separate Kubernetes clusters"
+date: 2026-03-05
+tags: [kubernetes, storage, k3d]
+---
+
+# PVCs cannot be shared across separate Kubernetes clusters
+
+I was debugging cross-cluster log visibility in a multi-cluster Airflow setup (two k3d clusters federated via Karmada). When a task runs on cluster-b, the API server on cluster-a can't find its logs — the log server on cluster-b's worker pod is not reachable from cluster-a's API server.
+
+My first instinct was: use a shared PVC. Mount the same volume on all worker pods across both clusters. Workers write logs there, API server reads from there. Simple.
+
+Turns out that's not how PVCs work.
+
+## Why it doesn't work
+
+A PVC is a Kubernetes-scoped resource. When you create a PVC in cluster-a, it gets bound to a PersistentVolume provisioned by cluster-a's storage backend (in k3d, that's the `local-path` provisioner, which creates a directory on the k3d server container's filesystem). cluster-b has no knowledge of that PV — it's just a directory inside a Docker container that cluster-b can't see.
+
+**ReadWriteMany (RWX) doesn't help.** RWX is a PVC access mode that lets multiple pods *within the same cluster* mount the same volume simultaneously. It has nothing to do with networking across clusters. A worker pod on cluster-b cannot mount a PVC that lives in cluster-a, regardless of access mode.
+
+**k3d makes this even clearer.** Each k3d cluster runs its nodes as Docker containers. Their filesystems are completely isolated. Even if you could somehow share a host directory between the two sets of containers, Kubernetes wouldn't know about it — you'd be bypassing the storage layer entirely.
+
+## What you'd actually need
+
+For a PVC-like approach to work across clusters, you'd need an **external storage backend** that both clusters can reach over the network — something like:
+
+- An NFS server outside both clusters, with both clusters provisioning PVs that point to the same NFS export
+- A CephFS cluster accessible to both
+- A distributed block storage system like Longhorn with cross-cluster replication
+
+At that point you're essentially running an external storage service that both clusters connect to. That's exactly what MinIO replaces for logs: instead of a filesystem share, you get an S3-compatible object store on a shared host that both clusters can reach via the mesh network.
+
+## The actual solution for cross-cluster Airflow logs
+
+Deploy MinIO (or any S3-compatible store) on a host reachable by all clusters. Configure Airflow workers to write logs there via `AIRFLOW__LOGGING__REMOTE_LOGGING=True` and the `aws_default` connection (see the other TIL on this). The API server reads from the same bucket regardless of which cluster ran the task.
+
+The mental model: PVCs are intra-cluster. Cross-cluster shared storage requires an external service — treat it like a database, not a volume.

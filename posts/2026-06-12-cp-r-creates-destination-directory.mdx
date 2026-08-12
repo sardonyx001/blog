@@ -1,0 +1,77 @@
+---
+title: "cp -r creates the destination directory if it doesn't exist (in the two-operand case)"
+date: 2026-06-12
+tags: [shell, posix, cp]
+---
+
+# cp -r creates the destination directory if it doesn't exist (in the two-operand case)
+
+I was reviewing a PR where someone suggested we needed to add `mkdir -p dest/app-source` before running `cp -r . dest/app-source`. My instinct said it wasn't necessary, and I confirmed it both by testing locally and by looking up the POSIX spec.
+
+## What I tested
+
+```
+$ tree
+.
+├── dest/
+└── foo/
+    └── bar/
+        ├── file.1
+        ├── file.2
+        └── file.3
+
+$ cp -r foo dest/here   # 'here' doesn't exist yet
+
+$ tree
+.
+├── dest/
+│   └── here/           # created automatically!
+│       └── bar/
+│           ├── file.1
+│           ├── file.2
+│           └── file.3
+└── foo/
+    └── bar/
+        ├── file.1
+        ├── file.2
+        └── file.3
+```
+
+`here` was created automatically. No `mkdir -p` needed.
+
+## Why it works — the POSIX spec
+
+The POSIX spec for `cp -R` says (https://pubs.opengroup.org/onlinepubs/9699919799/utilities/cp.html):
+
+> "If target does not exist and two operands are specified, the name of the corresponding destination path for source_file shall be target"
+
+And separately:
+
+> "If the directory dest_file does not exist, it shall be created with file permission bits set to the same value as those of source_file"
+
+The key phrase is **"two operands"** — meaning exactly one source and one destination (`cp src dest`). In that case, if `dest` doesn't exist, `cp -r` creates it. This is well-defined POSIX behaviour.
+
+## The caveat — intermediate directories are NOT created
+
+`cp -r` only creates the **final** component of the destination path. If the parent doesn't exist either, you get an error:
+
+```
+$ cp -r foo nonexistent/here
+cp: cannot create directory 'nonexistent/here': No such file or directory
+```
+
+In that case you'd need `mkdir -p nonexistent/` first. But if the parent already exists, you're fine.
+
+## The case where this does NOT apply
+
+If you pass **more than two operands** (multiple sources), the destination must already exist:
+
+```
+$ cp -r foo bar dest/new   # ERROR — dest/new must already exist when there are 3+ operands
+```
+
+That's the only case where the reviewer's concern would be valid.
+
+## GNU vs BSD
+
+On Linux, `-r` and `-R` are aliases. On macOS (BSD `cp`), the man page discourages `-r` for correctness with symlinks and special files — use `-R` on macOS. Both create the destination directory in the two-operand case.

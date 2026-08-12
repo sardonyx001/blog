@@ -1,0 +1,39 @@
+---
+title: "yq can parse XML, including JaCoCo coverage reports"
+date: 2026-03-06
+tags: [yq, jacoco, maven]
+---
+
+# yq can parse XML, including JaCoCo coverage reports
+
+I wanted a quick way to print JaCoCo coverage numbers from the terminal without opening the HTML report or writing a Python script. I knew `yq` handles YAML and JSON but wasn't sure about XML — turns out it does, with `-p xml`.
+
+JaCoCo generates `target/site/jacoco/jacoco.xml` after a test run. The root `<report>` element has a bunch of `<counter>` children with `type`, `covered`, and `missed` attributes. To get coverage percentages:
+
+```bash
+yq -p xml -oy '.report.counter[] | . as $r |
+  ($r."+@covered" | tonumber) as $c |
+  ($r."+@missed" | tonumber) as $m |
+  $r."+@type" + ": " + ($c | tostring) + "/" + (($c + $m) | tostring) + " (" + (($c * 100 / ($c + $m)) | tostring | split(".")[0]) + "%)"' \
+  target/site/jacoco/jacoco.xml
+```
+
+Output:
+
+```
+INSTRUCTION: 14913/17724 (84%)
+BRANCH: 1027/1516 (67%)
+LINE: 3068/3585 (85%)
+COMPLEXITY: 809/1227 (65%)
+METHOD: 408/460 (88%)
+CLASS: 83/91 (91%)
+```
+
+A few things worth noting:
+
+- XML attributes are accessed with the `"+@attrname"` syntax in yq — the `+` prefix and quotes are required
+- `-p xml` sets the input format, `-oy` forces YAML output (without it yq warns about format ambiguity since the file ends in `.xml`)
+- `tonumber` is needed because all attribute values come in as strings
+- I truncate the decimal with `split(".")[0]` since `yq` doesn't have a `floor` or `round` built-in (at least not one I could find)
+
+I wrapped this plus `./mvnw test -q` into a script at `~/.local/bin/jacoco` so I can just run `jacoco` from any Maven project root.

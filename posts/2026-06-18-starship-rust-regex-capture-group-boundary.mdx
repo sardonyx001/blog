@@ -1,0 +1,48 @@
+---
+title: "Starship context_alias uses Rust regex — $1t is parsed as group named \"1t\", not group 1 followed by \"t\""
+date: 2026-06-18
+tags: [starship, regex, kubernetes]
+---
+
+# Starship context_alias uses Rust regex — $1t is parsed as group named "1t", not group 1 followed by "t"
+
+I was configuring Starship's `[kubernetes]` module to show short aliases for my CaaS cluster contexts. The context names look like:
+
+```
+region1-caas1-cluster1-prod-000123-myservice-api
+```
+
+I wanted to extract the region digit (`1`) and cluster digit (`1`) and produce `r1c1`. So I wrote:
+
+```toml
+{ context_pattern = "region(\\d+)-caas\\d+-cluster(\\d+)-.+-prod-\\d+-(\\w+)-(api|ui)",
+  context_alias = "r$1c$2/$3[$4]" }
+```
+
+The result was `j1/domestic[api]` — the `t` and the second digit were silently dropped.
+
+Turns out, Starship uses Rust's `regex` crate for replacement, and in Rust regex substitution syntax, `$name` consumes **all** alphanumeric characters (and underscores) as the group name. So `$1t` is interpreted as a reference to a capture group literally named `"1t"` — which doesn't exist — and expands to nothing.
+
+The fix is to use `${n}` to explicitly delimit the group reference:
+
+```toml
+context_alias = "r${1}c${2}/${3}[${4}]"
+```
+
+This is the same syntax Rust's `Regex::replace` uses when you need a literal character immediately after a backreference. The curly braces close the group name so everything after `}` is treated as literal text.
+
+## Other gotcha in the same session: no lookaround
+
+Starship also doesn't support lookahead or lookbehind (Rust's `regex` crate deliberately excludes them for guaranteed linear-time matching). I had tried:
+
+```toml
+context_pattern = "...(?<!non)-prod-..."
+```
+
+to distinguish `prod` from `non-prod` contexts, and got:
+
+```
+[WARN] - (starship::modules::kubernetes): Could not compile regular expression: look-around, including look-ahead and look-behind, is not supported
+```
+
+The fix is simpler anyway: put the `non-prod` rule **before** the `prod` rule in the `contexts` list. Starship uses first-match, so once `non-prod` is consumed, the `prod` pattern never sees those contexts.

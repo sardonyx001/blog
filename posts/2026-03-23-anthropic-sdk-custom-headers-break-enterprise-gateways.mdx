@@ -1,0 +1,69 @@
+---
+title: "Enterprise Anthropic-compatible gateways reject the SDK's custom headers"
+date: 2026-03-23
+tags: [anthropic, python, enterprise-gateway]
+---
+
+# Enterprise Anthropic-compatible gateways reject the SDK's custom headers
+
+I was configuring Hermes Agent (a Python CLI tool) to use an enterprise Anthropic-compatible AI gateway and kept hitting HTTP 400 errors: `Bad Request - Invalid Header`. The error was coming from IIS on the gateway side.
+
+Turns out the Anthropic Python SDK injects several custom headers that are fine for `api.anthropic.com` but get rejected by enterprise gateways that whitelist allowed headers.
+
+## The headers causing trouble
+
+When you pass a Bearer token (anything that doesn't start with `sk-ant-api`), the SDK adds these headers:
+
+```python
+kwargs["default_headers"] = {
+    "anthropic-beta": "interleaved-thinking-2025-05-14,...",
+    "user-agent": "claude-cli/2.1.74 (external, cli)",
+    "x-app": "cli",
+}
+```
+
+These exist because Anthropic's OAuth infrastructure routes requests based on the `user-agent` and beta feature headers. Without them, Claude Code's OAuth requests to `api.anthropic.com` get intermittent 500s.
+
+But enterprise gateways don't need (or want) these — they're just proxying the Messages API, not doing OAuth routing. And many gateways (especially IIS-backed ones) reject unknown headers outright with HTTP 400.
+
+## The fix
+
+Only inject these headers when talking to the official Anthropic API:
+
+```python
+# In anthropic_adapter.py or wherever you build the client
+_is_anthropic_official = not base_url or "api.anthropic.com" in (base_url or "")
+
+if _is_oauth_token(api_key):
+    kwargs["auth_token"] = api_key
+    if _is_anthropic_official:
+        # Only add custom headers for official Anthropic
+        all_betas = _COMMON_BETAS + _OAUTH_ONLY_BETAS
+        kwargs["default_headers"] = {
+            "anthropic-beta": ",".join(all_betas),
+            "user-agent": f"claude-cli/{_CLAUDE_CODE_VERSION} (external, cli)",
+            "x-app": "cli",
+        }
+```
+
+This preserves the Claude Code identity headers for official OAuth while skipping them for enterprise gateways.
+
+## The other gotcha: don't include `/v1` in `base_url`
+
+The SDK appends `/v1/messages` automatically. If your `base_url` already ends in `/v1`, you get a double suffix:
+
+```
+base_url: https://gateway/anthropic
+    → https://gateway/anthropic/v1/messages  ✓
+
+base_url: https://gateway/anthropic/v1
+    → https://gateway/anthropic/v1/v1/messages  ✗
+```
+
+This is the same gotcha as the Anthropic Go SDK — see [my earlier TIL about Crush](crush-anthropic-gateway-extra-headers.md).
+
+## Why enterprise gateways care about headers
+
+I think most gateways whitelist headers for security — they don't want arbitrary client-supplied headers leaking through to the upstream API or being logged/processed by internal infrastructure. The official Anthropic API expects these headers, but a proxy layer sitting in front doesn't.
+
+The `anthropic-beta` header in particular signals which beta features the client supports. If the gateway isn't doing feature gating itself, that header is just noise.

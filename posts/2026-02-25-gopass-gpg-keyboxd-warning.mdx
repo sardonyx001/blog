@@ -1,0 +1,23 @@
+---
+title: "Killing gpg-agent fixes the keyboxd version mismatch warning"
+date: 2026-02-25
+tags: [gpg, gopass, cli]
+---
+
+# Killing gpg-agent fixes the keyboxd version mismatch warning
+
+Sometimes after a GPG update, gopass starts printing this before doing anything:
+
+```
+gpg: WARNING: server 'keyboxd' is older than us (2.4.6 < 2.4.7).
+```
+
+The running `keyboxd` daemon is from the old version and GPG is now newer. This messes up things that talk to GPG indirectly — like the Raycast gopass extension, which just breaks silently.
+
+The fix is just to kill all the GPG daemons so they restart with the new version:
+
+```bash
+gpgconf --kill all
+```
+
+Next time you run something that needs GPG, the daemons come back up fresh and the warning goes away.

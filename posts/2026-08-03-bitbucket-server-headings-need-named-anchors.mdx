@@ -1,0 +1,62 @@
+---
+title: "Bitbucket Server doesn't generate heading IDs, so TOC anchor links silently don't work"
+date: 2026-08-03
+tags: [bitbucket, markdown, git]
+---
+
+# Bitbucket Server doesn't generate heading IDs, so TOC anchor links silently don't work
+
+I was generating a table of contents for a README hosted on Bitbucket Server (not Bitbucket Cloud — the self-hosted version). The links looked fine in the source and rendered visually, but clicking them did nothing. No scroll, no jump, just a URL fragment appended silently.
+
+Turns out Bitbucket Server's Markdown renderer doesn't add `id` attributes to heading elements. So when you link to `#setup`, there's nothing in the DOM with that id to scroll to. GitHub does this automatically; Bitbucket Server does not.
+
+I inspected the rendered HTML and saw this:
+
+```html
+<h2>Setup</h2>
+```
+
+No `id`, no `name`, nothing. The anchor `#setup` in the TOC link has nowhere to land.
+
+## The fix: inject `<a name="...">` before each heading
+
+The workaround is to place an explicit named anchor immediately before each heading in the Markdown source:
+
+```markdown
+<a name="setup"></a>
+## Setup
+```
+
+Bitbucket Server renders the `<a>` tag as-is (it allows inline HTML), so the anchor exists in the DOM and the fragment link works.
+
+## Automating it with a pre-commit hook
+
+I wired this into a `gentoc` script that runs as a lefthook `pre-commit` command. It:
+
+1. Strips any previously injected `<a name="...">` tags (to avoid accumulating duplicates on repeated commits)
+2. Rebuilds the `## Contents` TOC section
+3. Re-injects `<a name="...">` before every non-Contents heading
+
+The key ordering detail: step 2 must happen before step 3. If you inject anchors first and then do the TOC regex replacement, the replacement can swallow the anchors that sit inside the `## Contents` block.
+
+```python
+# 1. Strip old anchors
+text = re.sub(r'<a name="[^"]+"></a>\n', '', text)
+
+# 2. Rebuild TOC (regex over clean text)
+text = re.sub(r'## Contents\n.*?(?=\n## )', replacement, text, flags=re.DOTALL)
+
+# 3. Inject anchors
+out = []
+for line in text.splitlines():
+    m = re.match(r'^(#{2,3}) (.+)', line)
+    if m and m.group(2).strip() != "Contents":
+        out.append(f'<a name="{anchor(m.group(2).strip())}"></a>')
+    out.append(line)
+```
+
+I wasted time doing it in the wrong order (inject then replace) and the `<a name="setup">` before `## Setup` kept disappearing.
+
+## Anchor format
+
+I also went down a rabbit hole trying `#markdown-header-setup` because some SO answers suggest Bitbucket uses that format. That's for Bitbucket Cloud's older renderer. On Bitbucket Server with explicit `<a name>` tags you just use the plain slug — no prefix needed.

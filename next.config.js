@@ -7,6 +7,9 @@ module.exports = withMDX({
   },
   swcMinify: true,
   reactStrictMode: true,
+  // standalone output for a lean Docker image — this app needs a real
+  // Node server (API routes, dynamic OG images, redis), not a static export
+  output: "standalone",
   images: {
     remotePatterns: [
       {
@@ -34,32 +37,5 @@ module.exports = withMDX({
         pathname: "/**",
       },
     ],
-  },
-  headers() {
-    return [
-      {
-        source: "/images/rauchg-3d4cecf.jpg",
-        headers: [
-          {
-            key: "cache-control",
-            value: "public, max-age=31536000, immutable",
-          },
-        ],
-      },
-    ];
-  },
-  redirects() {
-    return [
-      {
-        source: "/essays/:nested*",
-        destination: "/",
-        permanent: true,
-      },
-      {
-        source: "/slackin/:nested*",
-        destination: "https://github.com/rauchg/slackin",
-        permanent: true,
-      },
-    ];
   },
 });

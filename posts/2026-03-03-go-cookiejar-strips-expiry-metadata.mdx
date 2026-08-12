@@ -1,0 +1,71 @@
+---
+title: "Go's cookiejar strips expiry metadata from cookies"
+date: 2026-03-03
+tags: [go, http, cookies]
+---
+
+# Go's cookiejar strips expiry metadata from cookies
+
+I was building a Go tool that logs into a Java web app and wanted to print
+how long the session cookies last. I called `jar.Cookies(u)` after login and
+printed `c.Expires` and `c.MaxAge` for each cookie — but everything came back
+as "session (no expiry set)", even though the browser's DevTools clearly showed
+`Max-Age` values on the same cookies.
+
+Turns out `net/http/cookiejar` intentionally drops expiry metadata. It stores
+only what it needs to *send* cookies correctly (name, value, domain, path,
+secure, httpOnly) — the `Expires` and `MaxAge` fields are used internally to
+decide whether to include a cookie in a request, but they're not surfaced back
+out when you call `jar.Cookies()`. The returned `*http.Cookie` structs are
+basically stripped-down send-only views.
+
+## The fix
+
+Read cookies directly from the `http.Response` object, *before* the cookie jar
+processes them. The raw `resp.Cookies()` call parses the `Set-Cookie` headers
+and gives you the full `*http.Cookie` with `Expires`, `MaxAge`, `HttpOnly`,
+etc. intact.
+
+The catch: if the login endpoint redirects (302 → 200), the `Set-Cookie`
+headers are on the *redirect* response, not the final one. So you need to stop
+at the 302:
+
+```go
+noRedirect := &http.Client{
+    CheckRedirect: func(*http.Request, []*http.Request) error {
+        return http.ErrUseLastResponse // stop, don't follow
+    },
+}
+
+resp, err := noRedirect.Do(req)
+// resp is the 302 — Set-Cookie headers are here
+rawCookies := resp.Cookies() // full metadata preserved
+```
+
+Then separately seed your cookie jar with those cookies so subsequent requests
+are authenticated:
+
+```go
+jar, _ := cookiejar.New(nil)
+u, _ := url.Parse(baseURL)
+jar.SetCookies(u, rawCookies)
+
+hc := &http.Client{Jar: jar}
+// hc is now authenticated and you can inspect rawCookies for expiry info
+```
+
+## Why this matters
+
+In my case the cookies were:
+
+| Cookie       | Expiry                        |
+|-------------|-------------------------------|
+| JSESSIONID  | session (no Max-Age)          |
+| ID          | ~2 months (`Max-Age` set)     |
+| PASSWORD    | ~2 months (`Max-Age` set)     |
+
+That's actually useful — `JSESSIONID` is a true session cookie that dies on
+server restart or idle timeout, but `ID` and `PASSWORD` survive because they're
+persistent. Knowing this changes whether it makes sense to cache them to disk.
+
+I would have completely missed that if I'd trusted the jar output.

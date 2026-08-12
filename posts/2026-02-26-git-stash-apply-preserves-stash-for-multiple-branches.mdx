@@ -1,0 +1,32 @@
+---
+title: "git stash apply preserves the stash so you can apply it to multiple branches"
+date: 2026-02-26
+tags: [git]
+---
+
+# git stash apply preserves the stash so you can apply it to multiple branches
+
+I needed to apply the same set of uncommitted changes to two different branches today, and I always forget the right way to do this with stash.
+
+The thing I kept mixing up: `git stash pop` is actually two steps compressed into one — it applies the stash *and* immediately drops it. So if you pop on the first branch, the stash is gone by the time you switch to the second branch.
+
+The fix is to use `git stash apply` instead, which only does the first step:
+
+```bash
+# on the first branch
+git checkout branch-one
+git stash apply stash@{0}
+
+# switch to the second branch — stash is still there
+git checkout branch-two
+git stash apply stash@{0}
+
+# done with both? drop it manually
+git stash drop stash@{0}
+```
+
+The `stash@{0}` index is optional if it's the most recent stash (that's the default), but I like being explicit about it.
+
+You can also check what's in your stash list first with `git stash list` — useful when you have more than one stash and want to make sure you're applying the right one.
+
+So: **pop = apply + drop**, **apply = apply only**. That's the whole thing.

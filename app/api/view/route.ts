@@ -1,7 +1,5 @@
-export const runtime = "edge";
-
 import redis from "@/app/redis";
-import postsData from "@/app/posts.json";
+import { getAllPostsMeta } from "@/lib/posts";
 import commaNumber from "comma-number";
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
@@ -22,7 +20,9 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const post = postsData.posts.find(post => post.id === id);
+  // metadata only (no MDX body) — this endpoint just reports a view count,
+  // it shouldn't ship the full post content on every poll
+  const post = getAllPostsMeta().find(p => p.id === id);
 
   if (post == null) {
     return NextResponse.json(

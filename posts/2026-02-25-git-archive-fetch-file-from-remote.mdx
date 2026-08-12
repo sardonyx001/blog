@@ -1,0 +1,25 @@
+---
+title: "You can fetch a single file from a remote git repo without cloning"
+date: 2026-02-25
+tags: [git, cli]
+---
+
+# You can fetch a single file from a remote git repo without cloning
+
+I needed to check `pom.xml` in about 10 different repos and cloning all of them felt really wasteful. Turns out there's a much better way:
+
+```bash
+git archive --remote="ssh://git@host/project/repo.git" HEAD path/to/file.txt \
+  | tar -xO
+```
+
+Here's what each part does:
+
+- `--remote` — connects directly to the remote over SSH, no local clone needed
+- `HEAD` — the ref to read from (can be a branch or commit too)
+- `path/to/file.txt` — just the file you want, not the whole tree
+- `| tar -xO` — `git archive` outputs a tar stream; `-x` extracts it, `-O` prints to stdout instead of writing to disk
+
+The whole thing is one round-trip and prints the file contents straight to your terminal. No disk usage, no cleanup. I thought that was really cool.
+
+One thing to watch out for: the server needs `uploadArchive` enabled. If it's disabled you'll get an error, or sometimes just silence.

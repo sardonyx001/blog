@@ -1,0 +1,36 @@
+---
+title: "make won't regenerate config.h after a branch switch unless you run make clean"
+date: 2026-03-04
+tags: [make, c++, build]
+---
+
+# make won't regenerate config.h after a branch switch unless you run make clean
+
+I built btop++ from source on one branch, switched to a feature branch, and ran `make` again. The build succeeded, but `btop --version` still showed the old commit hash. I was confused for a moment — I could see `git log` showed a different HEAD, so why was the binary still reporting the old one?
+
+The culprit was `obj/config.h`. btop's Makefile generates it from `src/config.h.in` using `sed`, substituting in the current git commit hash among other things:
+
+```makefile
+GIT_COMMIT := $(shell git rev-parse --short HEAD 2> /dev/null || true)
+
+# later...
+@sed -e "s|@GIT_COMMIT@|$(GIT_COMMIT)|" ... src/config.h.in | tee obj/config.h > /dev/null
+```
+
+Make tracks file timestamps. Since `src/config.h.in` hadn't changed between the two branches, Make saw `obj/config.h` as up-to-date and skipped regenerating it. The stale `config.h` still contained the commit hash from the previous build:
+
+```c
+constexpr std::string_view GIT_COMMIT = "f18accc";  // wrong branch!
+```
+
+The fix is just `make clean` before rebuilding on the new branch:
+
+```sh
+make clean && make -j$(nproc)
+```
+
+`make clean` removes everything under `obj/`, forcing `config.h` to be regenerated from scratch with the correct `$(shell git rev-parse --short HEAD)` value.
+
+I think this is a general Make gotcha: any time a generated file's *content* depends on something Make can't track as a file dependency (like the current git branch or environment variables), Make can't know it's stale. It only knows about timestamps. So switching branches without cleaning can silently leave cached generated files in place.
+
+The fix is always `make clean` when you need a truly fresh build — or at minimum, `touch src/config.h.in` to force just that one regeneration.

@@ -1,0 +1,63 @@
+---
+title: "String.format() is preferred over + concatenation in Java, but the compiler handles simple cases"
+date: 2026-02-26
+tags: [java, strings, performance]
+---
+
+# String.format() is preferred over + concatenation in Java, but the compiler handles simple cases
+
+I was writing a validation error message in a Spring Boot project like this:
+
+```java
+String message = "Invalid mongoDBKey : " + mongoDBKey + " (should match regex of TY\\w{8,12}-[BSC])";
+```
+
+A senior dev flagged it and said string concatenation with `+` is bad because it keeps creating new `String` objects. He's right about the mechanism — each `+` produces an intermediate `String`:
+
+1. `"Invalid mongoDBKey : " + mongoDBKey` → new `String`
+2. `result + " (should match...)"` → another new `String`
+
+The fix is `String.format()`:
+
+```java
+String message = String.format("Invalid mongoDBKey : %s (should match regex of TY\\w{8,12}-[BSC])", mongoDBKey);
+```
+
+This builds the string in one pass internally (it uses a `StringBuilder` under the hood), producing a single `String` object.
+
+## The nuance: the Java compiler is smarter than it looks
+
+I looked into this a bit more and turns out for **simple one-liner concatenations like this one**, the Java compiler already handles the allocation itself — and the story has two chapters depending on your Java version.
+
+**Java 5–8:** `javac` translates `+` into a `StringBuilder` append chain at compile time. So `a + b + c` becomes `new StringBuilder().append(a).append(b).append(c).toString()` in the bytecode. You can verify this yourself with `javap -c`. ([source](https://medium.com/javarevisited/java-compiler-optimization-for-string-concatenation-7f5237e5e6ed))
+
+**Java 9+:** [JEP 280 ("Indify String Concatenation")](https://openjdk.org/jeps/280) went further and replaced the `StringBuilder` dance entirely with a single `invokedynamic` call to `java.lang.invoke.StringConcatFactory`. The default strategy (`MH_INLINE_SIZED_EXACT`) builds the final `String` directly into a pre-sized `byte[]` with no intermediate objects at all — reportedly 3–4× faster than the Java 8 approach. The bonus: since the strategy lives in the runtime library rather than the bytecode, future JDKs can improve concatenation without requiring you to recompile your code. ([Baeldung deep-dive](https://www.baeldung.com/java-string-concatenation-invoke-dynamic), [DZone](https://dzone.com/articles/jdk-9jep-280-string-concatenations-will-never-be-t))
+
+One interesting caveat from the JEP 280 docs: if you *manually* write `StringBuilder` for a simple case, you actually **opt out** of the `invokedynamic` optimisation, because the compiler only applies it to `+` expressions — not to explicit `StringBuilder` usage. So for simple cases, `+` (or `String.format()`) is actually better than hand-rolling a `StringBuilder`.
+
+The concern is **real** when concatenation happens inside a loop:
+
+```java
+// Bad — allocates a new String + StringBuilder each iteration
+String result = "";
+for (String s : list) {
+    result = result + s;  // quadratic allocations
+}
+
+// Good — one StringBuilder, many appends
+StringBuilder sb = new StringBuilder();
+for (String s : list) {
+    sb.append(s);
+}
+String result = sb.toString();
+```
+
+The compiler cannot collapse that loop-level `+` pattern, so every iteration genuinely creates garbage.
+
+## So which should I use?
+
+For error messages and similar one-time strings: `String.format()` is the idiomatic choice — it's readable, the template is obvious, and it avoids the risk of someone later wrapping it in a loop without thinking. It also makes it easier to add more variables without the expression growing visually messy.
+
+For hot paths or loops: `StringBuilder` directly.
+
+The senior's advice is solid even if the performance argument doesn't fully apply to a single-line case — it's a good habit that prevents real problems when the pattern moves into a loop.

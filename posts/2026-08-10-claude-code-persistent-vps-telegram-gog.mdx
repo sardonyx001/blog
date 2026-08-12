@@ -1,0 +1,173 @@
+---
+title: "Claude Code can run perpetually on a VPS with Telegram and gog-cli access"
+date: 2026-08-10
+tags: [claude-code, vps, mcp, systemd]
+---
+
+# Claude Code can run perpetually on a VPS with Telegram and gog-cli access
+
+I wanted an always-on Claude Code agent on my VPS that I could message from Telegram and that had real Google Workspace and browser access. Getting there took a few wrong turns, so I'm writing down the whole path — including the dead end I abandoned.
+
+## The dead end: picoclaw
+
+I started out trying [picoclaw](https://github.com/sipeed/picoclaw), a lightweight Go-based personal AI assistant that's supposed to run on tiny hardware. It installs cleanly (`.deb` package, systemd-friendly), but I hit two upstream bugs that killed it for me:
+
+1. **Anthropic API keys never work.** I confirmed with `strings /usr/bin/picoclaw | grep 'x-api-key'` that the binary *never* sends an `x-api-key` header — it always uses `Authorization: Bearer`. Anthropic's API only accepts Bearer auth for OAuth-style tokens (like the ones from `claude setup-token`), not raw `sk-ant-api03-...` API keys, which need `x-api-key`. So raw API keys 401 with "Invalid bearer token" no matter what you do. This matches upstream issue [sipeed/picoclaw#206](https://github.com/sipeed/picoclaw/issues/206).
+2. **`temperature` is deprecated for newer Claude models** (like Sonnet 5), and picoclaw unconditionally sends it on every request — no config knob exists to omit it for the native Anthropic Messages path. Two PRs tried to fix this ([#2948](https://github.com/sipeed/picoclaw/pull/2948), [#2940](https://github.com/sipeed/picoclaw/pull/2940)) but both were closed unmerged. The `thinking_level` config field looks like it should suppress `temperature` (there's even a log line: `anthropic: temperature cleared because thinking is enabled`) but it's not implemented for this provider path — you just get `thinking_level is set but current provider does not support it, ignoring`.
+
+Workaround for #2 is to fall back to an older model that still accepts `temperature` (`claude-sonnet-4-6` in my case), but by that point I decided to just use real Claude Code instead of a lightweight clone.
+
+## The actual setup: Claude Code + tmux + systemd
+
+Claude Code's TUI needs a real terminal (it's an ink-based interface), so you can't just run it directly under systemd — there's no controlling tty. The fix is to keep it inside a detached **tmux** session (tmux always allocates a pty for its panes, systemd or not), and use systemd only to *create* that tmux session on boot.
+
+Install Claude Code without Node — there's a native installer:
+
+```bash
+curl -fsSL https://claude.ai/install.sh | bash
+```
+
+Gotcha: on a fish-shell box, this installer appends **bash** syntax (`export PATH=...`) to the end of `~/.config/fish/config.fish`, which is invalid fish and breaks every new shell. I had to fix it manually:
+
+```fish
+# swap the bad line for:
+fish_add_path $HOME/.local/bin
+```
+
+Then enable lingering so a systemd **user** service can run without you being logged in:
+
+```bash
+sudo loginctl enable-linger yourusername
+```
+
+And the unit itself (`~/.config/systemd/user/claude-telegram.service`):
+
+```ini
+[Unit]
+Description=Claude Code with Telegram channel (perpetual, tmux-backed)
+After=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/tmux new-session -d -s claude-telegram "fish -lc 'claude --channels plugin:telegram@claude-plugins-official --dangerously-skip-permissions --disallowedTools AskUserQuestion,ExitPlanMode'"
+ExecStop=/usr/bin/tmux kill-session -t claude-telegram
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now claude-telegram.service
+```
+
+Type is `oneshot` with `RemainAfterExit=yes` because the actual long-running process is the detached tmux server, which survives independently of the systemd unit's own exec — there's no crash-restart supervision here (if the pane dies, systemd still shows the unit as active). Fine for my use case; a watchdog timer would be the next step if that mattered.
+
+I wrap the `claude` invocation in `fish -lc '...'` rather than setting `PATH` directly in the unit — that way it always inherits whatever the interactive shell would have (bun, cargo, homebrew, etc.) without duplicating config.
+
+### Two flags that matter for unattended use
+
+- `--dangerously-skip-permissions` — skips permission prompts. **This is genuinely dangerous** and should only be used on a box you fully trust, ideally sandboxed. It does *not* skip the workspace-trust prompt or the bypass-permissions warning screen on first launch — those still need one manual confirmation the first time.
+- `--disallowedTools AskUserQuestion,ExitPlanMode` — this one I didn't expect to need. `AskUserQuestion` (multi-choice prompts) and `ExitPlanMode` (plan-mode approval) are UI-driven tools, not permission checks, so `--dangerously-skip-permissions` doesn't touch them. Without disabling them explicitly, the agent can stall forever waiting for a choice you have no way to answer from Telegram.
+
+### Telegram channel setup
+
+Claude Code has a research-preview "channels" feature that pushes external events (Telegram, Discord, iMessage) into a *running* session rather than spawning a new one. Install via the official plugin marketplace:
+
+```
+/plugin marketplace add anthropics/claude-plugins-official
+/plugin install telegram@claude-plugins-official
+/telegram:configure <bot-token-from-BotFather>
+```
+
+then relaunch with `--channels plugin:telegram@claude-plugins-official` (as in the systemd unit above), DM the bot, and pair with the code it sends back:
+
+```
+/telegram:access pair <code>
+/telegram:access policy allowlist
+```
+
+The one thing that bit me: pairing has to happen in **one continuous session**. I ran the config step, exited, then relaunched with `--channels` later — but by the time I DMed the bot, nothing was listening yet, so the message got silently consumed by Telegram's `getUpdates` with no handler attached. Confirmed via:
+
+```bash
+curl -s "https://api.telegram.org/bot$TOKEN/getUpdates"   # {"ok":true,"result":[]} — already consumed, no reply sent
+```
+
+The fix is just discipline: launch with `--channels`, leave it running, *then* DM the bot, then pair, all without exiting in between.
+
+## gog-cli: same account, different machine, no shared secrets
+
+I use [gog-cli](https://github.com/openclaw/gogcli) locally for Gmail/Calendar/Drive/Sheets, backed by macOS Keychain. None of that transfers to a Linux box automatically — the OAuth refresh token and client secret live in the Keychain, not in any config file gog writes.
+
+Rather than dump secrets out of Keychain, I did a fresh headless OAuth login on the VPS with gog's `--remote` two-step flow, reusing the local `client_id` (recovering the paired `client_secret` from Keychain is fine here — it's a "Desktop app" OAuth client, and Google's own docs are explicit that those secrets aren't meant to be confidential, unlike a server-side client secret).
+
+```bash
+# store the client credentials (installed-app JSON format, secret stored in the file since there's no OS keyring on a bare VPS)
+printf '%s' '{"installed":{"client_id":"...","client_secret":"...","redirect_uris":["http://localhost"]}}' \
+  | gog auth credentials set - --insecure
+
+# step 1: prints an auth_url with a localhost redirect_uri on the *VPS*
+gog auth add you@gmail.com --remote --step 1 --services=calendar,contacts,docs,drive,gmail,sheets
+```
+
+Open the printed URL in your **local** browser, approve, and the browser will try to redirect to `http://127.0.0.1:PORT/oauth2/callback` and fail to load — that's expected, that port is on the VPS, not your laptop. Just copy the full URL from the address bar (it has `?code=...&state=...` in it) and feed it to step 2:
+
+```bash
+gog auth add you@gmail.com --remote --step 2 --auth-url '<the-full-failed-redirect-url>' \
+  --services calendar,contacts,docs,drive,gmail,sheets
+```
+
+### The keyring passphrase loop
+
+After step 2, gog kept prompting `Enter passphrase to unlock ".../gogcli/keyring":` over and over, forever. Root cause: gog's `auto` keyring backend falls back to an **encrypted file-based keyring** when there's no OS keyring service (no macOS Keychain, no gnome-keyring/kwallet on a bare Ubuntu VPS) — and it can't ask for a passphrase securely over SSH the same way it would locally. The fix is baked into the binary's own strings output, if you go looking:
+
+```
+interactive prompts work locally, but CI/ssh/agents need GOG_KEYRING_PASSWORD
+```
+
+So: generate a passphrase, export it, and — since this needs to survive across every future `gog` invocation (systemd service, MCP server spawned by Claude Code, etc.) — persist it as a **universal fish variable** rather than just exporting it in one shell:
+
+```fish
+set -Ux GOG_KEYRING_PASSWORD (openssl rand -base64 24)
+```
+
+`set -Ux` writes to `~/.config/fish/fish_variables`, which every future fish shell reads at startup — including `fish -lc '...'` invocations from systemd, so the persistent Claude Code session (and anything it spawns) picks it up automatically without extra plumbing. One gotcha: universal variables only apply to *new* shells — a process already running when you set the var won't see it, so I had to restart the systemd service (which respawns the tmux/fish/claude chain fresh) before it took effect. Confirmed by checking `/proc/<pid>/environ` for the actual `claude` process, not an ancestor shell.
+
+### gog as an MCP server, not a skill
+
+gog-cli ships its own `gog mcp` subcommand — "a typed, allowlisted MCP server over stdio." That's a much better integration than writing a skill that shells out to the CLI and parses text output: native typed tools, no output parsing, and it auto-triggers on Workspace-shaped requests the same way any other tool would.
+
+```bash
+claude mcp add gog --scope user -e GOG_KEYRING_PASSWORD=$GOG_KEYRING_PASSWORD -- /home/you/.local/bin/gog mcp --allow-write
+```
+
+Note the argument order — I initially put `-e KEY=value` *before* the server name, and `claude mcp add` swallowed the name into the `-e` value list, since `-e` is a greedy multi-value flag. Name has to come right after `add`.
+
+`gog mcp` defaults to read-only tools; pass `--allow-write` to expose mutating ones (send email, edit Drive files, etc.). There's also a `--gmail-no-send` flag if you want write access everywhere except sending mail — handy for an unattended agent you don't fully trust yet.
+
+## Playwright MCP for browser access
+
+For giving the agent real browser access, the current (as of August 2026) consensus is Microsoft's official `@playwright/mcp` package — it uses accessibility-tree/structured DOM snapshots instead of screenshots, which is both cheaper and more reliable for an agent to act on. There's an official Claude Code plugin for it in the same marketplace as the Telegram one:
+
+```
+/plugin install playwright@claude-plugins-official
+```
+
+Two gotchas on a bare VPS:
+
+1. **The plugin's `.mcp.json` hardcodes `npx`.** If your box only has `bun` (no Node), it just won't start. I installed Node via Homebrew/Linuxbrew (`brew install node`) since that was already set up on the box — cleaner than trying to alias `npx` to `bunx` and hoping for argument compatibility.
+2. **`npx playwright install --with-deps chromium` isn't enough on its own** if the MCP server defaults to the Chrome *channel* rather than the bundled Chromium binary — mine kept saying "no Chrome/Chromium found" even after the bundled Chromium was installed and I'd verified it launched fine from a standalone Node script. The fix was to install actual Google Chrome:
+   ```bash
+   npx playwright install --with-deps chrome
+   ```
+   which pulls a real `google-chrome` binary via `apt` and points playwright-core's `chrome` channel at it.
+
+## The whole stack, end to end
+
+- systemd user service (with lingering enabled) keeps a tmux session alive forever, running Claude Code with `--channels` for Telegram, bypass-permissions, and the two interactive tools disabled.
+- Telegram plugin bridges messages in and out of that one persistent session.
+- gog-cli, authenticated via a headless two-step OAuth flow, registered as an MCP server for native Gmail/Calendar/Drive/Sheets access.
+- Playwright MCP, backed by a real installed Chrome binary, for actual browser access.
+
+All three MCP servers (`gog`, `playwright`, `telegram`) show up under `/mcp` inside the session once everything's wired up correctly.

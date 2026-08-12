@@ -32,6 +32,4 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-nextjs-cache-
     - name: Build Next.js
-      env:
-        UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
       run: pnpm run build

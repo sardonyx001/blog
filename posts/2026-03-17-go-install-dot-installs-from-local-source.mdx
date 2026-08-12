@@ -1,0 +1,29 @@
+---
+title: "go install . installs the current module from local source, not the registry"
+date: 2026-03-17
+tags: [go, cli]
+---
+
+# go install . installs the current module from local source, not the registry
+
+I always reach for `go build` when I want to try out a Go CLI I'm hacking on locally, and then move the binary somewhere on my PATH by hand. Turns out there's a simpler way.
+
+When you're inside a Go module directory, you can run:
+
+```bash
+go install .
+```
+
+This compiles the package in the current directory and drops the binary straight into `$GOPATH/bin` (usually `~/go/bin`). If that directory is on your `PATH`, the command is immediately available system-wide — no manual `mv` or `cp` needed.
+
+The key thing I didn't fully appreciate before: `go install <path>` has two modes. When you pass a *module path with a version tag* (like `go install github.com/foo/bar@latest`), it fetches from the module proxy. But when you pass a *relative or local path* (`.`, `./cmd/foo`, etc.), it uses exactly the source on disk — your local changes, your current branch, everything. No tag required.
+
+So the workflow when developing a CLI locally is:
+
+```bash
+# make a change
+go install .
+# the updated binary is already in ~/go/bin, ready to use
+```
+
+Compared to `make build && ./aku`, this skips the `./` prefix entirely and puts it on PATH. The only caveat: if the module sets ldflags for version/commit injection (via a `Makefile`), `go install .` won't include those — you'd need `go install -ldflags "..."` or just use `make build` when you care about the embedded build metadata.

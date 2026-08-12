@@ -5,27 +5,27 @@ import { themeEffect } from "./theme-effect";
 import { Analytics } from "./analytics";
 import { Header } from "./header";
 import { Footer } from "./footer";
-import { doge } from "./doge";
+import { AmbientBackground } from "./ambient-background";
 
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata = {
-  title: "Guillermo Rauch's blog",
+  title: "jamell.dev",
   description:
-    "Guillermo Rauch is the CEO and founder of Vercel, a software engineer, and the creator of Next.js, Mongoose, Socket.io and other open source libraries.",
+    "Jamel Eddine Lassoued's personal blog and portfolio — notes on backend engineering, infrastructure, and whatever else is worth writing down.",
   openGraph: {
-    title: "Guillermo Rauchg's blog",
+    title: "jamell.dev",
     description:
-      "Guillermo Rauch is the CEO and founder of Vercel, a software engineer, and the creator of Next.js, Mongoose, Socket.io and other open source libraries.",
-    url: "https://rauchg.com",
-    siteName: "Guillermo Rauchg's blog",
+      "Jamel Eddine Lassoued's personal blog and portfolio — notes on backend engineering, infrastructure, and whatever else is worth writing down.",
+    url: "https://jamell.dev",
+    siteName: "jamell.dev",
   },
   twitter: {
     card: "summary_large_image",
-    site: "@rauchg",
-    creator: "@rauchg",
+    site: "@whyamihere001",
+    creator: "@whyamihere001",
   },
-  metadataBase: new URL("https://rauchg.com"),
+  metadataBase: new URL("https://jamell.dev"),
 };
 
 export const viewport = {
@@ -46,18 +46,20 @@ export default function RootLayout({
       <head>
         <script
           dangerouslySetInnerHTML={{
-            __html: `(${themeEffect.toString()})();(${doge.toString()})();`,
+            __html: `(${themeEffect.toString()})();`,
           }}
         />
       </head>
 
       <body className="dark:text-gray-100 max-w-2xl m-auto">
-        <main className="p-6 pt-3 md:pt-6 min-h-screen">
+        <AmbientBackground />
+
+        <main className="content-panel p-6 pt-3 md:pt-6 min-h-screen rounded-b-lg">
           <Header />
           {children}
         </main>
 
-        <Footer />
+        <Footer className="content-panel rounded-t-lg" />
         <Analytics />
       </body>
     </html>

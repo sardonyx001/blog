@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState, useCallback } from "react";
 import { themeEffect } from "./theme-effect";
-import va from "@vercel/analytics";
+import { track } from "./analytics";
 
 export function ThemeToggle() {
   // a `null` preference implies auto
@@ -107,7 +107,7 @@ export function ThemeToggle() {
             localStorage.setItem("theme", newPreference);
           }
 
-          va.track("Theme toggle", {
+          track("Theme toggle", {
             Theme: newPreference === null ? "system" : newPreference,
           });
 

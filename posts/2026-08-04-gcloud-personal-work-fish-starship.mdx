@@ -1,0 +1,170 @@
+---
+title: "Setting up gcloud with separate personal and work accounts in fish + starship"
+date: 2026-08-04
+tags: [gcloud, fish, starship]
+---
+
+# Setting up gcloud with separate personal and work accounts in fish + starship
+
+I wanted to use gcloud for both my personal Google account and my work account, with a clean starship indicator so I never accidentally run something against the wrong project. Turns out there are several layers of pain to get through.
+
+## The SSL problem (Netskope)
+
+The first thing I hit was an SSL error when running `gcloud auth login`:
+
+```
+certificate verify failed: Basic Constraints of CA cert not marked critical (_ssl.c:1081)
+```
+
+This is a Netskope thing — the corporate proxy does SSL inspection and injects its own CA cert. The problem is gcloud uses Python 3.14 internally (via a virtualenv), and Python 3.14 now enforces RFC 5280 more strictly and rejects CA certs where the Basic Constraints extension isn't marked critical. Netskope's intercept CA has exactly this issue.
+
+The fix is to force gcloud to use Python 3.11 instead:
+
+```fish
+set -gx CLOUDSDK_PYTHON /opt/homebrew/bin/python3.11
+```
+
+You also need to point gcloud at the Netskope CA bundle so it can verify the intercepted TLS certs:
+
+```bash
+gcloud config set core/custom_ca_certs_file "/Library/Application Support/Netskope/STAgent/data/nscacert_combined.pem"
+```
+
+That bundle is maintained by the Netskope agent itself, so it doesn't need to be recreated after reboots.
+
+## Separate configs per account
+
+gcloud has a concept of "configurations" — named profiles that each have their own account, project, and settings. You create them like this:
+
+```bash
+gcloud config configurations create personal
+gcloud config set account personal@gmail.com
+gcloud config set project my-personal-project
+
+gcloud config configurations create work
+gcloud config set account work@example.com
+gcloud config set project my-work-project
+```
+
+Switch between them with:
+
+```bash
+gcloud config configurations activate personal
+gcloud config configurations activate work
+```
+
+The active config name is just stored as plain text in `~/.config/gcloud/active_config`.
+
+## The ADC quota project warning
+
+After setting up two configs, every `gcloud config configurations activate` prints a scary warning:
+
+```
+WARNING: Your active project does not match the quota project in your local Application Default Credentials file.
+```
+
+Application Default Credentials (ADC) is a single global file (`~/.config/gcloud/application_default_credentials.json`) that can only hold one account and one quota project. Since you're switching between two configs, one of them will always mismatch.
+
+For the personal config, I fixed it by running `gcloud auth application-default login` while `personal` was active — it wrote `gog-cli-jamel` as the quota project.
+
+For the work config, it can't be fixed: the org project requires `serviceusage.services.use` permission to set as a quota project, and my account doesn't have it. So that warning is permanent.
+
+I silenced both warnings with:
+
+```fish
+set -gx CLOUDSDK_CORE_VERBOSITY error
+```
+
+This keeps actual errors visible but hides warnings. Turns out gcloud's `--verbosity` flag (and the env var equivalent) suppresses the quota warning cleanly.
+
+## A fast `gcfg` function for switching configs
+
+`gcloud config configurations activate` takes ~1.5 seconds because it spins up the whole Python virtualenv just to write a single file. Since `~/.config/gcloud/active_config` is literally just a one-line text file with the config name, I replaced it with a fish function:
+
+```fish
+# ~/.config/fish/functions/gcfg.fish
+function gcfg --description 'fast gcloud config activate'
+    set -l name $argv[1]
+    if not test -f ~/.config/gcloud/configurations/config_$name
+        echo "unknown config: $name" >&2
+        return 1
+    end
+    printf '%s' $name > ~/.config/gcloud/active_config
+    _gcloud_set_icon
+    echo "Activated [$name]."
+end
+```
+
+Important: use `printf '%s'` not `echo` — gcloud expects no trailing newline in that file. `echo` writes `name\n`, which makes gcloud read the config name as `name\n` and then `IS_ACTIVE` shows `False` for everything.
+
+This drops the switch time from ~1.5s to ~11ms. Add tab completions in `~/.config/fish/completions/gcfg.fish`:
+
+```fish
+function __gcfg_configs
+    string replace 'config_' '' -- (basename -a ~/.config/gcloud/configurations/config_*)
+end
+
+complete -c gcfg -f -a "(__gcfg_configs)"
+```
+
+## Starship indicator with per-environment color
+
+I wanted a starship prompt indicator that shows which gcloud config is active, colored differently per environment (blue for prod, green for non-prod, gray for personal).
+
+The native starship `[gcloud]` module only supports a single style — no per-project colors. A `[custom]` module with a shell script works but adds ~280ms to every prompt render (subprocess fork overhead).
+
+The fast solution: store the active config as an env var on shell startup and on every config switch, then use starship's native `[env_var]` module (pure Rust, < 1ms) to render it.
+
+```fish
+# ~/.config/fish/functions/_gcloud_set_icon.fish
+function _gcloud_set_icon
+    set -l project (grep 'project' ~/.config/gcloud/configurations/config_(cat ~/.config/gcloud/active_config) 2>/dev/null | cut -d= -f2 | tr -d ' ')
+    set -e GCLOUD_PROD; set -e GCLOUD_NONPROD; set -e GCLOUD_PERSONAL
+    switch $project
+        case 'my-work-project-prod'
+            set -gx GCLOUD_PROD 1
+        case 'my-work-project-non-prod'
+            set -gx GCLOUD_NONPROD 1
+        case '*'
+            set -gx GCLOUD_PERSONAL 1
+    end
+end
+
+function __gcloud_watch --on-event fish_postexec
+    if string match -q '*gcloud config configurations activate*' $argv
+        _gcloud_set_icon
+    end
+end
+```
+
+Call `_gcloud_set_icon` in `config.fish` on startup. The `fish_postexec` event handler picks up native `gcloud config configurations activate` calls automatically, so you don't need to use a wrapper.
+
+In `starship.toml`:
+
+```toml
+format = """
+$directory\
+${env_var.GCLOUD_PROD}\
+${env_var.GCLOUD_NONPROD}\
+${env_var.GCLOUD_PERSONAL}\
+$kubernetes\
+$all\
+"""
+
+[env_var.GCLOUD_PROD]
+variable = 'GCLOUD_PROD'
+format = '[󱇶]($style) '
+style = 'bold blue'
+
+[env_var.GCLOUD_NONPROD]
+variable = 'GCLOUD_NONPROD'
+format = '[󱇶]($style) '
+style = 'bold green'
+
+[env_var.GCLOUD_PERSONAL]
+variable = 'GCLOUD_PERSONAL'
+format = '[󱇶]($style) '
+style = 'dimmed white'
+```
+
+The icon (󱇶, Nerd Fonts Google logo) is blue for prod, green for non-prod, and dim gray for personal. Fast, zero subprocess, updates automatically when switching configs.

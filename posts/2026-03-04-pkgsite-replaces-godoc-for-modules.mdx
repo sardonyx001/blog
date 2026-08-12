@@ -1,0 +1,47 @@
+---
+title: "godoc breaks with Go modules — use pkgsite instead"
+date: 2026-03-04
+tags: [go, godoc, tooling]
+---
+
+# `godoc` breaks with Go modules — use `pkgsite` instead
+
+I was writing a Go library, added some godoc comments, and ran `godoc -http=:6060` to preview how the rendered docs would look. Instead of a browser, I got this:
+
+```
+using module mode; GOMOD=/path/to/go.mod
+cannot find package "." in:
+        /src/my-module
+```
+
+Turns out `godoc` predates Go modules entirely and still expects GOPATH layout (`$GOPATH/src/...`). It has no idea what to do with a module path as a directory root — it just can't find the package. There's a long-standing GitHub issue about this ([golang/go#26827](https://github.com/golang/go/issues/26827)) and it's essentially never getting fixed because `godoc` is considered legacy.
+
+## The fix: `pkgsite`
+
+`pkgsite` is the modern replacement — it's what `pkg.go.dev` itself runs on, so the rendered output is identical. It works natively with `go.mod`:
+
+```sh
+go install golang.org/x/pkgsite/cmd/pkgsite@latest
+```
+
+Then from the repo root:
+
+```sh
+pkgsite -open .
+```
+
+That's it. It opens `http://localhost:8080` automatically and serves docs under the full module path (e.g. `git.example.com/org/mymodule`). No GOPATH, no install step, no publishing.
+
+## What it renders
+
+- Package-level doc comments render correctly
+- Exported struct fields show their comments inline
+- `[TypeName]` cross-reference links (Go 1.19+) resolve and are clickable
+- `// Example` functions show up as runnable examples (same as pkg.go.dev)
+
+I'd just use `pkgsite` from the start — there's no reason to reach for `godoc` anymore for module-mode projects.
+
+## References
+
+- [`pkgsite` install](https://pkg.go.dev/golang.org/x/pkgsite/cmd/pkgsite)
+- [golang/go#26827 — godoc doesn't support modules](https://github.com/golang/go/issues/26827)

@@ -1,0 +1,80 @@
+---
+title: "Use filesha256 triggers on Terraform null_resource to detect file changes"
+date: 2026-03-04
+tags: [terraform, null_resource]
+---
+
+# Use filesha256 triggers on Terraform null_resource to detect file changes
+
+I was using Terraform `null_resource` with `local-exec` provisioners to run
+`helm upgrade --install` commands. The problem: Terraform has no way to know
+when the Helm values files changed, so it never re-ran the command even when
+the values files were updated.
+
+The fix: `triggers` with `filesha256`.
+
+```hcl
+resource "null_resource" "airflow_deploy_cluster_a" {
+  depends_on = [null_resource.configmaps_cluster_a]
+
+  triggers = {
+    # Re-run helm upgrade whenever these files change
+    common_values  = filesha256("${var.repo_root}/helm/airflow-values-common.yaml")
+    cluster_values = filesha256("${var.repo_root}/helm/airflow-values-cluster-a.yaml")
+    # Also re-run if the target IP changes
+    mesh_ip = var.mesh_ip
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      helm upgrade --install airflow apache-airflow/airflow \
+        --namespace airflow --kube-context k3d-cluster-a \
+        -f ${var.repo_root}/helm/airflow-values-common.yaml \
+        -f ${var.repo_root}/helm/airflow-values-cluster-a.yaml \
+        --reset-values \
+        --timeout 10m
+    EOT
+  }
+}
+```
+
+`filesha256()` computes a hash of the file's contents at plan time. When you
+change the file and run `terraform plan`, Terraform sees the hash changed and
+marks the `null_resource` as needing replacement (destroy + create), which
+re-runs the `local-exec` provisioner.
+
+## Two other things I learned along the way
+
+**Use `--reset-values` with helm upgrade in automation**
+
+Without `--reset-values`, `helm upgrade` merges new values on top of the
+previously-deployed values. If you're driving helm from Terraform and the user
+hasn't touched the release, this is fine. But in practice, I kept ending up with
+stale values from previous runs leaking through. `--reset-values` starts clean:
+only the values you explicitly provide are applied.
+
+**Don't use sed/tmpfile for value substitution — use `--set` flags**
+
+I tried generating a temp file with `sed "s/MESH_IP/$MESH_IP/g"` to substitute
+a dynamic IP into a values file. This silently failed (the tmpfile wasn't created
+in the Terraform execution environment), and Helm deployed with only the
+cluster-specific values file, re-enabling bundled services I'd explicitly
+disabled.
+
+The cleaner approach: pass dynamic values directly as `--set` flags:
+
+```hcl
+command = <<-EOT
+  helm upgrade --install airflow apache-airflow/airflow \
+    --namespace airflow --kube-context k3d-cluster-a \
+    -f ${var.repo_root}/helm/airflow-values-common.yaml \
+    -f ${var.repo_root}/helm/airflow-values-cluster-a.yaml \
+    --set "data.metadataConnection.host=${var.mesh_ip}" \
+    --set "config.celery.broker_url=amqp://user:pass@${var.mesh_ip}:30672/" \
+    --reset-values \
+    --timeout 10m
+EOT
+```
+
+Terraform interpolates `${var.mesh_ip}` at plan time before the command string
+is passed to the shell. No tmpfile, no sed, no silent failures.

@@ -18,33 +18,44 @@ import { YouTube } from "app/(post)/components/youtube";
 import { Ref, FootNotes, FootNote } from "app/(post)/components/footnotes";
 import { Blockquote as blockquote } from "app/(post)/components/blockquote";
 
+// Shared custom component mapping for MDX content — used both by the
+// `@next/mdx` static-page pipeline (via `useMDXComponents` below, the
+// Next.js-recognized convention for .mdx pages like `app/about/page.mdx`)
+// and by the dynamic `next-mdx-remote` pipeline that renders posts from the
+// `posts/` content collection (`app/(post)/[year]/[slug]/page.tsx`). One
+// component map, two render paths — so post content and static .mdx pages
+// look and behave identically.
+export const mdxComponents = {
+  a,
+  h1,
+  h2,
+  h3,
+  p,
+  ol,
+  ul,
+  li,
+  hr,
+  code,
+  pre: Snippet,
+  img: Image,
+  blockquote,
+  Tweet,
+  Image,
+  Figure,
+  Snippet,
+  Caption,
+  Callout,
+  YouTube,
+  Ref,
+  FootNotes,
+  FootNote,
+};
+
 export function useMDXComponents(components: {
   [component: string]: React.ComponentType;
 }) {
   return {
     ...components,
-    a,
-    h1,
-    h2,
-    h3,
-    p,
-    ol,
-    ul,
-    li,
-    hr,
-    code,
-    pre: Snippet,
-    img: Image,
-    blockquote,
-    Tweet,
-    Image,
-    Figure,
-    Snippet,
-    Caption,
-    Callout,
-    YouTube,
-    Ref,
-    FootNotes,
-    FootNote,
+    ...mdxComponents,
   };
 }

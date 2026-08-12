@@ -1,0 +1,89 @@
+---
+title: "os.Exit should only ever be called from main in Go"
+date: 2026-04-22
+tags: [go, cli, error-handling]
+---
+
+# os.Exit should only ever be called from main in Go
+
+I was writing a Go CLI load test tool and ended up with `os.Exit(1)` scattered all over the place — a `die()` helper function called from multiple spots, a `fatalf` closure inside `runLoad`, and a few `log.Fatalf` calls in `main`. It compiled fine and worked, but something felt wrong. I looked into it and turns out there's a very strong community consensus on this.
+
+## Why scattered `os.Exit` is bad
+
+`os.Exit` **bypasses all deferred functions**. Not just in the calling goroutine — everywhere. If you have `defer el.Sync()` anywhere in the call stack (which flushes a 500k-entry buffered log channel to disk in my case), and `os.Exit` fires before that defer gets a chance to run, those events are gone. Silently.
+
+The other problem is testability. Any test that exercises code containing `os.Exit` will terminate the entire test process, not just fail the test. So functions that call `os.Exit` are effectively untestable.
+
+`log.Fatal` has the same problem — it calls `os.Exit(1)` internally after printing. `slog` (Go 1.21+) deliberately did *not* add a `Fatal` level, which is itself a recommendation from the team that wrote it. Mixing program-termination logic into a logging call is a side-effect that makes code hard to reason about.
+
+## The fix: `run() error` pattern
+
+The community consensus (used by cobra, urfave/cli, prometheus, the github CLI, etc.) is that `os.Exit` belongs in exactly one place: `main`. Everything else returns `error`.
+
+```go
+func main() {
+    if err := run(); err != nil {
+        slog.Error("fatal", slog.Any("err", err))
+        os.Exit(1)
+    }
+}
+
+func run() error {
+    cfg, err := LoadConfig(...)
+    if err != nil {
+        return fmt.Errorf("load config: %w", err)
+    }
+
+    el, err := NewEventLogger(cfg.LogDir)
+    if err != nil {
+        return fmt.Errorf("event logger: %w", err)
+    }
+    defer el.Sync() // ← runs on every return path, including errors
+
+    mc, err := NewMongoClient(cfg)
+    if err != nil {
+        return fmt.Errorf("mongo connect: %w", err)
+    }
+    defer closeWithTimeout(mc)
+
+    // ... rest of the program
+    return nil
+}
+```
+
+The big win is that `defer el.Sync()` now covers *every* exit path automatically — successful completion, early returns on errors, everything. I no longer need a `fatalf` closure that manually calls `el.Sync()` before each `os.Exit`. That closure existed entirely to paper over the problem.
+
+## What about different exit codes?
+
+If you need to distinguish config errors (exit 2) from runtime errors (exit 1), extend it:
+
+```go
+type exitError struct {
+    code int
+    err  error
+}
+
+func (e *exitError) Error() string { return e.err.Error() }
+
+func main() {
+    if err := run(); err != nil {
+        slog.Error("fatal", slog.Any("err", err))
+        code := 1
+        var ee *exitError
+        if errors.As(err, &ee) {
+            code = ee.code
+        }
+        os.Exit(code)
+    }
+}
+```
+
+## What about panics?
+
+`panic` + `recover` is a separate topic, but the same principle applies: recover in `main` (or at goroutine boundaries), not deep in helper functions.
+
+## The one exception
+
+Force-exit paths where cleanup has *already happened* are fine. In my tool I have a second-signal handler that calls `el.Sync()` and then `os.Exit(1)` — that's intentional and correct because `Sync()` is called explicitly just before the exit.
+
+The rule isn't "never call `os.Exit` outside main" in a religious sense — it's "ensure cleanup runs before you exit, and `defer` is the cleanest way to guarantee that".

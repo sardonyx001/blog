@@ -1,11 +1,14 @@
-import postsData from "./posts.json";
+import { getAllPostsMeta } from "@/lib/posts";
 import redis from "./redis";
 import commaNumber from "comma-number";
 
 export type Post = {
   id: string;
+  slug: string;
+  year: string;
   date: string;
   title: string;
+  tags: string[];
   views: number;
   viewsFormatted: string;
 };
@@ -16,8 +19,13 @@ type Views = {
 };
 
 export const getPosts = async () => {
-  const allViews: null | Views = await redis.hgetall("views");
-  const posts = postsData.posts.map((post): Post => {
+  let allViews: null | Views = null;
+  try {
+    allViews = await redis.hgetall("views");
+  } catch (err) {
+    console.error("failed to read view counts from redis:", err);
+  }
+  const posts = getAllPostsMeta().map((post): Post => {
     const views = Number(allViews?.[post.id] ?? 0);
     return {
       ...post,

@@ -1,0 +1,410 @@
+---
+title: "How to run a local multi-cluster Kubernetes setup with Colima, k3d and Karmada on macOS"
+date: 2026-02-26
+tags: [kubernetes, k3d, karmada, colima, macos]
+---
+
+# How to run a local multi-cluster Kubernetes setup with Colima, k3d and Karmada on macOS
+
+I spent a day building a local multi-cluster Kubernetes environment on my MacBook (M4 Pro,
+48 GB RAM) and hit enough gotchas that I wanted to write up the full working procedure from
+scratch so others don't have to rediscover all of this.
+
+The result is 3 Kubernetes clusters running inside Docker containers on Colima, all
+federated under Karmada, with proper cross-cluster networking. It's a solid base for
+testing multi-cluster workloads locally.
+
+```
+macOS
+└── Colima (Docker runtime, 10 CPU / 24 GB RAM)
+    ├── k3d karmada-host   -> Karmada control plane
+    ├── k3d cluster-a      -> workload cluster 1
+    └── k3d cluster-b      -> workload cluster 2
+```
+
+---
+
+## Why these tools
+
+**Colima** is a free alternative to Docker Desktop on macOS. It runs a Linux VM using
+Apple's Virtualization.Framework and exposes a Docker daemon. The Docker socket ends up
+at `~/.colima/default/docker.sock` instead of the usual `/var/run/docker.sock`, which
+matters for tools that spawn Docker containers themselves.
+
+**k3d** runs k3s (lightweight Kubernetes) inside Docker containers. Each `k3d cluster create`
+gives you a fully functional Kubernetes cluster in about 15 seconds. It's much more
+reliable on Colima than Kind, which has kubelet bootstrapping failures due to cgroup driver
+mismatches.
+
+**Karmada** is a multi-cluster Kubernetes orchestration system. It federates independent
+clusters under a single control plane with its own API server. You can inspect and deploy
+across all member clusters from one place.
+
+---
+
+## Prerequisites
+
+### Install tools
+
+```bash
+brew install colima kubectl helm k3d karmadactl
+```
+
+Versions this guide was tested with:
+- Colima: latest (macOS Virtualization.Framework)
+- k3d: v5.8.3 (k3s v1.33.6)
+- karmadactl: v1.16.2
+- kubectl: v1.35.1
+- helm: latest
+
+### Configure Colima
+
+The default Colima config (2 CPU / 2 GB RAM) is too small. Also, the default Docker
+ulimit and inotify settings will cause Karmada's webhook to crash-loop. Fix all of this
+upfront in `~/.colima/default/colima.yaml`:
+
+```yaml
+cpu: 10
+memory: 24
+disk: 40
+vmType: vz
+mountType: virtiofs
+docker:
+  default-ulimits:
+    nofile:
+      name: nofile
+      soft: 1048576
+      hard: 1048576
+provision:
+  - mode: system
+    script: sysctl -w fs.inotify.max_user_instances=1024
+```
+
+The `provision` script runs on every Colima start. The inotify limit defaults to 128
+inside Colima's VM -- with 3 k3d clusters and Karmada's watchers, it gets exhausted
+almost immediately.
+
+Start Colima without `--kubernetes` -- k3d handles Kubernetes:
+
+```bash
+colima start
+```
+
+Add the Docker socket to your shell config. For fish (`~/.config/fish/config.fish`):
+
+```fish
+set -x DOCKER_HOST "unix://$HOME/.colima/default/docker.sock"
+```
+
+For bash/zsh (`~/.bashrc` or `~/.zshrc`):
+
+```bash
+export DOCKER_HOST="unix://$HOME/.colima/default/docker.sock"
+```
+
+---
+
+## Step 1 -- Create the k3d clusters
+
+The `karmada-host` cluster needs a port mapping so the Karmada API server (NodePort 30443)
+is accessible from macOS at port 5443:
+
+```bash
+export DOCKER_HOST="unix://$HOME/.colima/default/docker.sock"
+
+k3d cluster create karmada-host -p "5443:30443@loadbalancer"
+k3d cluster create cluster-a
+k3d cluster create cluster-b
+```
+
+Verify all three are ready:
+
+```bash
+kubectl get nodes --context k3d-karmada-host
+kubectl get nodes --context k3d-cluster-a
+kubectl get nodes --context k3d-cluster-b
+```
+
+Expected output for each:
+```
+NAME                        STATUS   ROLES                  AGE   VERSION
+k3d-karmada-host-server-0   Ready    control-plane,master   30s   v1.33.6+k3s1
+```
+
+---
+
+## Step 2 -- Install Karmada
+
+Do not use `karmadactl init` on macOS -- it hardcodes `/etc/karmada` and the `unlinkat`
+syscall it uses to clean up that directory requires write permission on `/etc` itself
+(the parent), which is root-owned and you can't safely change that. Use Helm instead:
+
+```bash
+kubectl config use-context k3d-karmada-host
+kubectl create namespace karmada-system
+
+helm repo add karmada-charts https://raw.githubusercontent.com/karmada-io/karmada/master/charts
+helm repo update
+
+helm install karmada karmada-charts/karmada \
+  --namespace karmada-system \
+  --set apiServer.serviceType=NodePort \
+  --set apiServer.nodePort=30443 \
+  --timeout=300s
+```
+
+Helm will likely report a timeout -- this is a false alarm. A post-install Job
+(`karmada-static-resource`) applies CRDs and then self-deletes. Helm's `--wait` can't
+observe it and gives up. The install succeeded if all 7 pods are Running:
+
+```bash
+kubectl get pods -n karmada-system
+```
+
+Expected:
+```
+NAME                                               READY   STATUS    RESTARTS   AGE
+etcd-0                                             1/1     Running   0          2m
+karmada-aggregated-apiserver-...                   1/1     Running   0          2m
+karmada-apiserver-...                              1/1     Running   0          2m
+karmada-controller-manager-...                     1/1     Running   0          2m
+karmada-kube-controller-manager-...                1/1     Running   0          2m
+karmada-scheduler-...                              1/1     Running   0          2m
+karmada-webhook-...                                1/1     Running   0          2m
+```
+
+If the webhook is crash-looping with `too many open files`, you skipped the Colima
+config step above. Fix it without restarting:
+
+```bash
+colima ssh -- sudo sysctl -w fs.inotify.max_user_instances=1024
+kubectl delete pod -n karmada-system -l app=karmada-webhook
+```
+
+### Extract the Karmada kubeconfig
+
+The Helm install stores the Karmada API server kubeconfig in a secret. Extract it and
+rewrite the internal DNS name to `127.0.0.1:5443` (accessible via the k3d port mapping):
+
+```bash
+kubectl get secret karmada-kubeconfig -n karmada-system \
+  -o jsonpath='{.data.kubeconfig}' | base64 -d \
+  | sed 's|karmada-apiserver.karmada-system.svc.cluster.local:5443|127.0.0.1:5443|g' \
+  > ~/.kube/karmada-apiserver.config
+
+# Verify
+kubectl --kubeconfig ~/.kube/karmada-apiserver.config get clusters
+# "No resources found" is the correct response here
+```
+
+---
+
+## Step 3 -- Fix cross-cluster networking
+
+This is the most involved part. k3d creates each cluster in a completely isolated Docker
+bridge network. The Karmada controller-manager (running inside `karmada-host`) needs to
+reach `cluster-a` and `cluster-b` API servers -- but they're in different Docker networks
+and can't see each other.
+
+The solution:
+
+1. Create a shared `karmada-mesh` Docker network and connect all server containers to it
+2. Also connect `karmada-host` directly into each cluster's own network (needed because
+   k3s TLS certs only include the original cluster network IPs as SANs -- mesh IPs are
+   not in the cert and TLS validation fails if you use them)
+
+```bash
+# Shared mesh network (also used for cross-cluster application traffic later)
+docker network create karmada-mesh
+docker network connect karmada-mesh k3d-karmada-host-server-0
+docker network connect karmada-mesh k3d-cluster-a-server-0
+docker network connect karmada-mesh k3d-cluster-b-server-0
+
+# Direct connections for cert-valid access from Karmada controller to member clusters
+docker network connect k3d-cluster-a k3d-karmada-host-server-0
+docker network connect k3d-cluster-b k3d-karmada-host-server-0
+```
+
+Record the IPs you'll need in the next step:
+
+```bash
+# Cert-valid IPs for each cluster (karmada controller uses these)
+CLUSTER_A_IP=$(docker inspect k3d-cluster-a-server-0 \
+  --format '{{(index .NetworkSettings.Networks "k3d-cluster-a").IPAddress}}')
+CLUSTER_B_IP=$(docker inspect k3d-cluster-b-server-0 \
+  --format '{{(index .NetworkSettings.Networks "k3d-cluster-b").IPAddress}}')
+
+# karmada-host mesh IP (workloads in cluster-a/b use this to reach services on karmada-host)
+KARMADA_HOST_MESH_IP=$(docker inspect k3d-karmada-host-server-0 \
+  --format '{{(index .NetworkSettings.Networks "karmada-mesh").IPAddress}}')
+
+echo "cluster-a IP: $CLUSTER_A_IP"           # e.g. 172.20.0.3
+echo "cluster-b IP: $CLUSTER_B_IP"           # e.g. 172.21.0.3
+echo "karmada-host mesh IP: $KARMADA_HOST_MESH_IP"  # e.g. 172.23.0.2
+```
+
+---
+
+## Step 4 -- Register member clusters
+
+`karmadactl join` runs on macOS and needs to reach both the Karmada API server and the
+member cluster API servers. k3d's kubeconfig uses `0.0.0.0:PORT` for the API server
+address, which is fine from macOS. We join using these host-accessible addresses, then
+patch the stored configs to use internal IPs so the Karmada controller (which runs inside
+Docker) can actually reach them.
+
+```bash
+# Get the host-accessible API server addresses from kubeconfig
+CLUSTER_A_HOST_ADDR=$(kubectl config view --context k3d-cluster-a --raw \
+  -o jsonpath='{.clusters[?(@.name=="k3d-cluster-a")].cluster.server}')
+CLUSTER_B_HOST_ADDR=$(kubectl config view --context k3d-cluster-b --raw \
+  -o jsonpath='{.clusters[?(@.name=="k3d-cluster-b")].cluster.server}')
+
+# Join both clusters
+karmadactl join cluster-a \
+  --cluster-kubeconfig ~/.kube/config \
+  --cluster-context k3d-cluster-a \
+  --kubeconfig ~/.kube/karmada-apiserver.config
+
+karmadactl join cluster-b \
+  --cluster-kubeconfig ~/.kube/config \
+  --cluster-context k3d-cluster-b \
+  --kubeconfig ~/.kube/karmada-apiserver.config
+```
+
+Expected:
+```
+cluster(cluster-a) is joined successfully
+cluster(cluster-b) is joined successfully
+```
+
+Now patch both the `Cluster` resource and the stored kubeconfig secrets to use internal
+IPs. The `Cluster.spec.apiEndpoint` is what the controller actually reads -- patching only
+the secret is not enough:
+
+```bash
+# Patch Cluster resources
+kubectl --kubeconfig ~/.kube/karmada-apiserver.config patch cluster cluster-a \
+  --type='json' \
+  -p="[{\"op\":\"replace\",\"path\":\"/spec/apiEndpoint\",\"value\":\"https://${CLUSTER_A_IP}:6443\"}]"
+
+kubectl --kubeconfig ~/.kube/karmada-apiserver.config patch cluster cluster-b \
+  --type='json' \
+  -p="[{\"op\":\"replace\",\"path\":\"/spec/apiEndpoint\",\"value\":\"https://${CLUSTER_B_IP}:6443\"}]"
+
+# Patch kubeconfig secrets (they are in karmada-cluster namespace, NOT karmada-system)
+kubectl --kubeconfig ~/.kube/karmada-apiserver.config \
+  get secret cluster-a -n karmada-cluster \
+  -o jsonpath='{.data.kubeconfig}' | base64 -d \
+  | sed "s|${CLUSTER_A_HOST_ADDR}|https://${CLUSTER_A_IP}:6443|g" \
+  | base64 | tr -d '\n' > /tmp/ca-patch.b64
+
+kubectl --kubeconfig ~/.kube/karmada-apiserver.config \
+  patch secret cluster-a -n karmada-cluster \
+  --type='json' \
+  -p="[{\"op\":\"replace\",\"path\":\"/data/kubeconfig\",\"value\":\"$(cat /tmp/ca-patch.b64)\"}]"
+
+kubectl --kubeconfig ~/.kube/karmada-apiserver.config \
+  get secret cluster-b -n karmada-cluster \
+  -o jsonpath='{.data.kubeconfig}' | base64 -d \
+  | sed "s|${CLUSTER_B_HOST_ADDR}|https://${CLUSTER_B_IP}:6443|g" \
+  | base64 | tr -d '\n' > /tmp/cb-patch.b64
+
+kubectl --kubeconfig ~/.kube/karmada-apiserver.config \
+  patch secret cluster-b -n karmada-cluster \
+  --type='json' \
+  -p="[{\"op\":\"replace\",\"path\":\"/data/kubeconfig\",\"value\":\"$(cat /tmp/cb-patch.b64)\"}]"
+```
+
+Verify both clusters are Ready within ~30 seconds:
+
+```bash
+kubectl --kubeconfig ~/.kube/karmada-apiserver.config get clusters
+```
+
+Expected:
+```
+NAME        VERSION        MODE   READY   AGE
+cluster-a   v1.33.6+k3s1   Push   True    2m
+cluster-b   v1.33.6+k3s1   Push   True    2m
+```
+
+---
+
+## Step 5 -- Verify federation is working
+
+Deploy a test workload to both clusters via Karmada PropagationPolicy:
+
+```bash
+# Create a namespace on the Karmada control plane
+kubectl --kubeconfig ~/.kube/karmada-apiserver.config create namespace test
+
+# Propagate it to both member clusters
+cat <<EOF | kubectl --kubeconfig ~/.kube/karmada-apiserver.config apply -f -
+apiVersion: policy.karmada.io/v1alpha1
+kind: PropagationPolicy
+metadata:
+  name: test-propagation
+  namespace: test
+spec:
+  resourceSelectors:
+    - apiVersion: apps/v1
+      kind: Deployment
+  placement:
+    clusterAffinity:
+      clusterNames:
+        - cluster-a
+        - cluster-b
+EOF
+
+# Deploy a simple workload
+kubectl --kubeconfig ~/.kube/karmada-apiserver.config create deployment nginx \
+  --image=nginx --namespace=test
+
+# Check it appeared on both member clusters
+kubectl get pods -n test --context k3d-cluster-a
+kubectl get pods -n test --context k3d-cluster-b
+
+# Clean up
+kubectl --kubeconfig ~/.kube/karmada-apiserver.config delete namespace test
+```
+
+---
+
+## Teardown
+
+```bash
+# Delete all clusters
+k3d cluster delete karmada-host cluster-a cluster-b
+
+# Remove the shared network
+docker network rm karmada-mesh
+
+# Remove extracted Karmada kubeconfig
+rm ~/.kube/karmada-apiserver.config
+
+# Stop Colima (optional)
+colima stop
+```
+
+---
+
+## Why Kind doesn't work here
+
+Kind v0.31 + Kubernetes v1.35 defaults to systemd as the cgroup driver for the kubelet.
+Colima's Docker uses cgroupfs. The kubelet inside the Kind node container fails the health
+check (`http://127.0.0.1:10248/healthz`) and times out after 4 minutes. No config patch
+fixes this reliably on Colima. k3d skips kubeadm/kubelet bootstrapping entirely and just
+runs k3s directly -- which is why it works.
+
+## Why the mesh network AND direct connections
+
+I initially tried just a shared mesh network. The Karmada controller could reach clusters
+at their mesh IPs (172.23.x.x), but TLS validation failed -- k3s only includes the
+original cluster network IPs (172.20.0.3, 172.21.0.3) in the certificate SANs when the
+cluster is created. Mesh IPs attached later are not in the cert.
+
+The clean solution: connect karmada-host directly to each cluster's own Docker network.
+This way the controller reaches member clusters using IPs that ARE in the TLS cert.
+The mesh network is still useful for application traffic (workloads in cluster-a/b
+reaching services on karmada-host).

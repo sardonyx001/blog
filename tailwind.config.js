@@ -5,7 +5,14 @@ module.exports = {
   darkMode: "class",
   content: ["./app/**/*.{js,ts,jsx,tsx,mdx}"],
   theme: {
-    extend: {},
+    extend: {
+      colors: {
+        // single pastel-blue accent, values come from CSS vars in
+        // globals.css so it re-themes automatically with light/dark mode
+        accent: "var(--accent)",
+        "accent-soft": "var(--accent-soft)",
+      },
+    },
   },
   plugins: [
     plugin(function ({ addVariant }) {

@@ -1,0 +1,78 @@
+---
+title: "In Spring Boot 3, the 'optional:' import prefix silences fail-fast: true for the config server"
+date: 2026-02-26
+tags: [spring-boot, spring-cloud-config, migration]
+---
+
+# In Spring Boot 3, the "optional:" import prefix silences fail-fast: true for the config server
+
+Found this while migrating a Spring Boot 2 app to Spring Boot 3. The old `bootstrap.yml` looked like this:
+
+```yaml
+spring:
+  cloud:
+    config:
+      fail-fast: true
+      uri: http://config.example.com/configserver/config
+```
+
+When migrating to Spring Boot 3, the bootstrap context is gone, so you move the config server connection into `application.yml` using `spring.config.import`:
+
+```yaml
+spring:
+  config:
+    import: "optional:configserver:http://config.example.com/configserver/config"
+  cloud:
+    config:
+      fail-fast: true   # ← this does nothing
+```
+
+The `optional:` prefix is a Spring Boot 3 import mechanism concept: if the import source is unreachable, skip it and continue starting up. `spring.cloud.config.fail-fast: true` is a Spring Cloud Config client property that says "if you can't reach the config server, crash immediately."
+
+These two directly contradict each other, and **`optional:` wins**. The app will happily start without any configuration from the config server. `fail-fast: true` is silenced. No warning, no error — just no remote properties loaded.
+
+This is a production correctness issue. If the config server holds your database credentials, mail host, etc., the app starts with defaults or nothing, and the failure mode is downstream (NPEs, connection errors) rather than a clear startup failure.
+
+## The fix
+
+Remove `optional:` for environments where the config server is required:
+
+```yaml
+spring:
+  config:
+    import: "configserver:http://config.example.com/configserver/config"
+  cloud:
+    config:
+      fail-fast: true   # ← now actually works
+```
+
+Keep `optional:` only for local development where you want to run without a config server:
+
+```yaml
+# application.yml (default / local dev)
+spring:
+  config:
+    import: "optional:configserver:http://config.dev.example.com/configserver/config"
+
+# application-dev.yml
+spring:
+  config:
+    import: "configserver:http://config.dev.example.com/configserver/config"
+  cloud:
+    config:
+      fail-fast: true
+
+# application-prod.yml
+spring:
+  config:
+    import: "configserver:http://config.example.com/configserver/config"
+  cloud:
+    config:
+      fail-fast: true
+```
+
+This is the pattern Spring Cloud Config recommends for the post-bootstrap-context world: per-profile `application-{env}.yml` files that override the default (optional) import with a mandatory one. Mirrors exactly what `bootstrap-prod.yml`, `bootstrap-stg.yml` etc. used to do in Spring Boot 2, just with a different file naming convention.
+
+## Why it tripped me up
+
+In Spring Boot 2, `fail-fast` and the config URI were in `bootstrap.yml` and the bootstrap context ran before anything else — so if the config server was down, startup failed before Spring even loaded your application context. In Spring Boot 3, the config import is just another property that participates in the normal property loading order. Making it `optional:` is a convenient way to skip it in dev, but if you also have `fail-fast: true` sitting there from the bootstrap era, it looks correct and does nothing.

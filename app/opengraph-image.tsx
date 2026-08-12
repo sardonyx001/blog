@@ -1,31 +1,14 @@
-export const runtime = "edge";
 export const revalidate = 60;
 
 import { ImageResponse } from "next/og";
 import { getPosts } from "@/app/get-posts";
+import { loadInter300, loadInter600, loadRobotoMono400 } from "@/lib/og-fonts";
 
 export default async function MainOG() {
   // fonts
-  const inter300 = fetch(
-    new URL(
-      `../node_modules/@fontsource/inter/files/inter-latin-300-normal.woff`,
-      import.meta.url
-    )
-  ).then(res => res.arrayBuffer());
-
-  const inter600 = fetch(
-    new URL(
-      `../node_modules/@fontsource/inter/files/inter-latin-600-normal.woff`,
-      import.meta.url
-    )
-  ).then(res => res.arrayBuffer());
-
-  const robotoMono400 = fetch(
-    new URL(
-      `../node_modules/@fontsource/roboto-mono/files/roboto-mono-latin-400-normal.woff`,
-      import.meta.url
-    )
-  ).then(res => res.arrayBuffer());
+  const inter300 = loadInter300();
+  const inter600 = loadInter600();
+  const robotoMono400 = loadRobotoMono400();
 
   const posts = await getPosts();
 
@@ -37,10 +20,10 @@ export default async function MainOG() {
       >
         <header tw="flex text-[36px] w-full">
           <div tw="font-bold" style={font("Inter 600")}>
-            Guillermo Rauch
+            Jamel Eddine Lassoued
           </div>
           <div tw="grow" />
-          <div tw="text-[28px]">rauchg.com</div>
+          <div tw="text-[28px]">jamell.dev</div>
         </header>
 
         <main tw="flex mt-10 flex-col w-full" style={font("Roboto Mono 400")}>

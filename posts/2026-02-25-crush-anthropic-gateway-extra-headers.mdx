@@ -1,0 +1,45 @@
+---
+title: "Two gotchas when pointing Crush at an Anthropic-compatible API gateway"
+date: 2026-02-25
+tags: [crush, anthropic, api-gateway]
+---
+
+# Two gotchas when pointing Crush at an Anthropic-compatible API gateway
+
+I was trying to get Crush to talk to a custom Anthropic-compatible gateway and it kept silently failing. Took me a while to figure out what was wrong — turns out there were two separate issues.
+
+**gotcha 1: `api_key` sends `x-api-key`, not `Authorization`**
+
+When you set `api_key` in Crush's config, the Anthropic Go SDK passes it as an `x-api-key` header. If your gateway expects `Authorization` instead, auth silently fails — no error, just 401s or ignored requests.
+
+The fix is `extra_headers`. I found that Crush expands `$VAR` references in header values, which is pretty handy:
+
+```json
+{
+  "providers": {
+    "my-gateway": {
+      "type": "anthropic",
+      "base_url": "https://my-gateway.example.com/anthropic",
+      "api_key": "$MY_GATEWAY_KEY",
+      "extra_headers": {
+        "Authorization": "$MY_GATEWAY_KEY"
+      },
+      "models": [...]
+    }
+  }
+}
+```
+
+You still need to set `api_key` — leaving it empty makes the SDK complain on startup — but it's the `Authorization` header that actually authenticates.
+
+**gotcha 2: don't put `v1/` in `base_url`**
+
+The SDK appends `v1/` automatically. So if you include it yourself:
+
+```
+base_url: https://gateway/anthropic
+    → https://gateway/anthropic/v1/messages  ✓
+
+base_url: https://gateway/anthropic/v1
+    → https://gateway/anthropic/v1/v1/messages  ✗
+```

@@ -1,0 +1,100 @@
+---
+title: "Running a cronjob on Kubernetes requires installing half the internet first"
+date: 2026-02-26
+tags: [kubernetes, devops, k3d]
+---
+
+# Running a cronjob on Kubernetes requires installing half the internet first
+
+I spent an entire day trying to set up a local multi-cluster Kubernetes environment to test Airflow scheduler leader election as a POC for migrating cronjobs. Here's how it went.
+
+**me:** hey can you run a cronjob
+
+**claude:** sure, first install Homebrew
+
+**me:** ok
+
+**claude:** now install Colima so you have Docker but not Docker Desktop because that costs money
+
+**me:** ok
+
+**claude:** now install kubectl, helm, k3d, kind, karmada, karmadactl, krew, vcluster
+
+**me:** ok... why kind
+
+**claude:** you won't need it
+
+**me:** ok
+
+**claude:** now start Colima with 10 CPUs and 24GB RAM
+
+**me:** I only have—
+
+**claude:** how much RAM do you have
+
+**me:** 48GB
+
+**claude:** perfect. now start Colima. oh it started k3s even though we don't need it
+
+**me:** how do I—
+
+**claude:** edit the yaml. now create 3 k3d clusters
+
+**me:** it says kubelet unhealthy
+
+**claude:** cgroup issue. create a config file
+
+**me:** still failing
+
+**claude:** switch to kind
+
+**me:** kind also fails
+
+**claude:** switch back to k3d
+
+**me:** ok k3d works. now what
+
+**claude:** install Karmada
+
+**me:** permission denied on /etc/karmada
+
+**claude:** sudo mkdir it
+
+**me:** unlinkat permission denied
+
+**claude:** sudo rm -rf it first
+
+**me:** still permission denied
+
+**claude:** use Helm instead
+
+**me:** webhook is crash looping
+
+**claude:** too many open files. edit colima.yaml, restart everything, recreate all 3 clusters
+
+**me:** ok done. now what
+
+**claude:** now install CloudNativePG, then Airflow twice, then write the DAGs
+
+**me:** what does any of this have to do with running a cronjob
+
+**claude:** the cronjob runs at the end
+
+---
+
+Actual lessons from the day, for future me:
+
+- **Kind doesn't work on Colima** — kubelet fails to start because of cgroup driver mismatch (Colima uses `cgroupfs`, Kind v0.31+ expects `systemd`). Use **k3d** instead. It runs k3s in Docker containers, skips kubeadm entirely, and works in ~13 seconds.
+- **vcluster background proxy is broken on Colima** since v0.24 ([issue #2723](https://github.com/loft-sh/vcluster/issues/2723)). The proxy container starts but the port is never accessible from the macOS host. Workaround: `kubectl port-forward` in the background.
+- **`karmadactl init` hardcodes `/etc/karmada`** and tries to delete it at startup regardless of the `-d` flag. On macOS, deleting from `/etc` requires write access to the parent — which is root-owned. Use Helm instead: `helm install karmada karmada-charts/karmada`.
+- **Karmada webhook crashes with "too many open files"** on Colima because the default Docker ulimit is too low. Fix: add to `~/.colima/default/colima.yaml`:
+  ```yaml
+  docker:
+    default-ulimits:
+      nofile:
+        name: nofile
+        soft: 1048576
+        hard: 1048576
+  ```
+  Then restart Colima and recreate k3d clusters.
+- **Airflow doesn't use Kubernetes leader election** — it uses PostgreSQL row-level locking (`SELECT ... FOR UPDATE NOWAIT`). If you're trying to test K8s-native leader election, Airflow is the wrong tool. But if your platform forces Airflow, deploy two instances pointing at a shared CloudNativePG cluster and the DB handles coordination automatically.

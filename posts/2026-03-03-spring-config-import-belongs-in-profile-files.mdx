@@ -1,0 +1,76 @@
+---
+title: "spring.config.import: configserver belongs in profile files, not application.yml"
+date: 2026-03-03
+tags: [spring-boot, spring-cloud-config, java]
+---
+
+# spring.config.import: configserver belongs in profile files, not application.yml
+
+I was setting up a Spring Boot 3.x app to run locally while the same app uses Spring Cloud Config in dev/stg/prod. My `application.yml` had:
+
+```yaml
+spring:
+  application:
+    name: myapp
+  config:
+    import: "optional:configserver:http://config.dev.example.com/configserver/config"
+```
+
+The problem: even with `optional:`, when the config server is reachable (e.g. you're on VPN), it fetches and injects remote properties — and those win over your `application-local.yml`. I wrote a whole TIL about having to pass `-Dspring.cloud.config.enabled=false` as a JVM arg to work around it.
+
+Turns out the right fix is much simpler: **don't put the config server import in `application.yml` at all**.
+
+## The clean setup
+
+`application.yml` — just the app name, no config import:
+
+```yaml
+spring:
+  application:
+    name: myapp
+```
+
+Each environment gets its own profile file with the import:
+
+**`application-dev.yml`:**
+```yaml
+spring:
+  config:
+    import: "configserver:http://config.dev.example.com/configserver/config?fail-fast=true"
+```
+
+**`application-stg.yml`:**
+```yaml
+spring:
+  config:
+    import: "configserver:http://config.stg.example.com/configserver/config?fail-fast=true"
+```
+
+**`application-prod.yml`:**
+```yaml
+spring:
+  config:
+    import: "configserver:http://config.prod.example.com/configserver/config?fail-fast=true"
+```
+
+**`application-local.yml`** — no mention of config server at all. Just your local overrides.
+
+## Why this works
+
+When you run with `-Dspring-boot.run.profiles=local`, Spring Boot only loads `application.yml` and `application-local.yml`. Since neither has a `spring.config.import: configserver:` line, the config server is never contacted. Your local properties win by default because there's nothing to compete with.
+
+When you deploy with the `dev` profile, `application-dev.yml` is loaded and the import fires normally.
+
+## The query param style for fail-fast
+
+I also noticed the profile files previously had `spring.cloud.config.fail-fast: true` as a separate property. That's redundant — `configserver:` without the `optional:` prefix already means the app will fail to start if the config server is unreachable. So `?fail-fast=true` as a query param on the import URL (or just omitting `optional:`) is sufficient and keeps everything in one line.
+
+Retry config also goes inline if you need it:
+
+```yaml
+spring:
+  config:
+    import: "configserver:http://host/config?fail-fast=true&max-attempts=6&max-interval=1500"
+```
+
+Reference: [Spring Cloud Config Client docs](https://docs.spring.io/spring-cloud-config/reference/client.html)

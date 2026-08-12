@@ -1,0 +1,138 @@
+---
+title: "Airflow 3 Celery workers crash silently when REMOTE_LOGGING=True but aws_default connection is missing"
+date: 2026-03-05
+tags: [airflow, celery, kubernetes]
+---
+
+# Airflow 3 Celery workers crash silently when REMOTE_LOGGING=True but aws_default connection is missing
+
+I was setting up MinIO as a centralized log store for a multi-cluster Airflow 3 setup (two k3d clusters, workers on both, one shared MinIO on a karmada-host). The idea was that workers from both clusters write logs to `s3://airflow-logs/`, and the API server reads from there — solving the cross-cluster "404 log not found" problem.
+
+So I added `AIRFLOW__LOGGING__REMOTE_LOGGING=True` to the worker pods via the Helm chart's `workers.env`. Deployed. Every task immediately started failing with this in the scheduler logs:
+
+```
+Executor CeleryExecutor reported that the task instance finished with state failed,
+but the task instance's state attribute is queued.
+```
+
+The tasks went from queued → failed in about 1 second. No task logs anywhere. No error in the worker logs (structured logger). Nothing in the API server. I had no idea what was happening.
+
+## Finding the actual error
+
+The error is in the Celery worker's stdout/stderr, which gets mixed into the structured log output. I had to look at the raw worker logs without grep filters. Eventually found it:
+
+```
+Task execute_workload[388ac59d-...] raised unexpected: RuntimeError("generator didn't yield")
+Traceback (most recent call last):
+  File ".../celery/app/trace.py", line 479, in trace_task
+    R = retval = fun(*args, **kwargs)
+  File ".../airflow/providers/celery/executors/celery_executor_utils.py", line 162, in execute_workload
+    supervise(
+  File ".../airflow/sdk/execution_time/supervisor.py", line 1972, in supervise
+    logger, log_file_descriptor = _configure_logging(log_path, client)
+  File ".../airflow/sdk/execution_time/supervisor.py", line 1887, in _configure_logging
+    with _remote_logging_conn(client):
+  File "/usr/python/lib/python3.12/contextlib.py", line 139, in __enter__
+    raise RuntimeError("generator didn't yield") from None
+```
+
+## What's actually happening
+
+In Airflow 3, when a Celery worker receives a task, it runs the Airflow Task SDK supervisor process. The supervisor calls `_configure_logging` which uses `_remote_logging_conn(client)` as a context manager to set up the remote log handler.
+
+The `_remote_logging_conn` function (in `airflow/sdk/execution_time/supervisor.py`) looks roughly like this:
+
+```python
+@contextlib.contextmanager
+def _remote_logging_conn(client: Client):
+    from airflow.sdk.log import load_remote_conn_id, load_remote_log_handler
+
+    if load_remote_log_handler() is None or not (conn_id := load_remote_conn_id()):
+        # Nothing to do — safe early exit
+        yield
+        return
+
+    conn = _fetch_remote_logging_conn(conn_id, client)
+
+    if conn:
+        key = f"AIRFLOW_CONN_{conn_id.upper()}"
+        os.environ[key] = conn.get_uri()
+        try:
+            yield  # <-- only yields here, inside the if conn: block
+        finally:
+            del os.environ[key]
+    # BUG: if conn is None, falls through with no yield
+```
+
+When `AIRFLOW__LOGGING__REMOTE_LOGGING=True` is set:
+- `load_remote_log_handler()` returns an `S3RemoteLogIO` object (not None)
+- `load_remote_conn_id()` returns `"aws_default"` (the hardcoded default)
+
+So it proceeds to `_fetch_remote_logging_conn("aws_default", client)`. This tries to fetch the `aws_default` Airflow connection from the secrets backends and then from the API server. If the connection doesn't exist, it returns `None`.
+
+When `conn` is `None`, the `if conn:` block is skipped — and the generator function **returns without ever yielding**. Python raises `RuntimeError("generator didn't yield")`. Every task fails instantly.
+
+This is a bug in Airflow — the `else: yield` is missing for the `conn is None` case. But the workaround is simple.
+
+## The fix: create the aws_default connection
+
+Create the `aws_default` Airflow connection in the metadata DB once:
+
+```bash
+kubectl exec -n airflow deploy/airflow-api-server -- airflow connections add aws_default \
+  --conn-type aws \
+  --conn-login minioadmin \
+  --conn-password minioadmin123 \
+  --conn-extra '{"endpoint_url": "http://your-minio-host:9000", "region_name": "us-east-1"}'
+```
+
+With this connection present:
+1. `_fetch_remote_logging_conn` finds it and returns the connection object
+2. `if conn:` is `True`
+3. The generator yields, tasks run normally
+4. Workers write logs to MinIO via the connection credentials
+
+You also need to actually set the boto3 env vars on the worker pods so the S3 handler can talk to MinIO (or S3):
+
+```yaml
+workers:
+  env:
+    - name: AIRFLOW__LOGGING__REMOTE_LOGGING
+      value: "True"
+    - name: AIRFLOW__LOGGING__REMOTE_BASE_LOG_FOLDER
+      value: "s3://airflow-logs/"
+    - name: AIRFLOW__LOGGING__ENCRYPT_S3_LOGS
+      value: "False"
+    - name: AWS_ACCESS_KEY_ID
+      value: "minioadmin"
+    - name: AWS_SECRET_ACCESS_KEY
+      value: "minioadmin123"
+    - name: AWS_DEFAULT_REGION
+      value: "us-east-1"
+    - name: AWS_ENDPOINT_URL
+      value: "http://your-minio-host:9000"
+```
+
+## Another gotcha: top-level env: doesn't reach workers
+
+In the Airflow 3 Helm chart, the top-level `env:` key does **not** propagate to worker pods. You have to set `workers.env:` specifically. Same for `scheduler`, `triggerer`, `dagProcessor`, and `apiServer` — each component needs its own `env:` block.
+
+I wasted time setting env vars at the top level and wondering why workers didn't have them. The YAML anchor trick helps avoid the repetition:
+
+```yaml
+x-minio-env: &minio-env
+  - name: AIRFLOW__LOGGING__REMOTE_LOGGING
+    value: "True"
+  # ... etc
+
+workers:
+  env: *minio-env
+
+scheduler:
+  env: *minio-env
+
+apiServer:
+  env: *minio-env
+```
+
+The `x-minio-env` key is ignored by Helm (unknown field), but the anchor/alias resolves correctly in the YAML.

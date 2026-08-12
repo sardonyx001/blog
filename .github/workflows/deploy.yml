@@ -1,0 +1,42 @@
+name: Deploy to VPS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-blog
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, blog-deploy]
+    steps:
+      - name: Pull latest main
+        run: |
+          set -euo pipefail
+          cd /opt/apps/blog
+          # docker-compose.yaml has box-specific local edits (marsa-net,
+          # container names, redis wiring, umami env vars) that are
+          # intentionally never committed. It's marked --skip-worktree so a
+          # fast-forward pull won't touch it even if a future commit on main
+          # also changes that file.
+          git fetch origin main
+          git merge --ff-only origin/main
+      - name: Build and redeploy
+        run: |
+          set -euo pipefail
+          cd /opt/apps/blog
+          docker compose -f docker-compose.yaml build
+          docker compose -f docker-compose.yaml up -d
+      - name: Health check
+        run: |
+          set -euo pipefail
+          sleep 5
+          code=$(curl -s -o /dev/null -w '%{http_code}' https://jamell.dev)
+          echo "HTTP status: $code"
+          if [ "$code" -ge 400 ]; then
+            echo "Health check failed with status $code"
+            exit 1
+          fi

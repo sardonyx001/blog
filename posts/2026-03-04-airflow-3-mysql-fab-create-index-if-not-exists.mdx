@@ -1,0 +1,68 @@
+---
+title: "Airflow 3 with MySQL 8.0 fails because Flask-AppBuilder uses CREATE INDEX IF NOT EXISTS"
+date: 2026-03-04
+tags: [airflow, mysql, flask-appbuilder]
+---
+
+# Airflow 3 with MySQL 8.0 fails because Flask-AppBuilder uses CREATE INDEX IF NOT EXISTS
+
+I spent way too long on this. I was trying to run Airflow 3.1.7 on MySQL 8.0 and the
+database migration kept failing with a cryptic SQL error:
+
+```
+sqlalchemy.exc.ProgrammingError: (pymysql.err.ProgrammingError) (1064,
+"You have an error in your SQL syntax ... near 'IF NOT EXISTS idx_group_id
+ON ab_group_role (group_id)' at line 1")
+[SQL: CREATE INDEX IF NOT EXISTS idx_group_id ON ab_group_role (group_id)]
+```
+
+Airflow's official docs say MySQL 8.0 is supported, so I assumed this was
+a configuration problem. It's not.
+
+## What's actually happening
+
+Flask-AppBuilder (FAB) — the auth library that Airflow historically used for its
+web UI and user management — has alembic migrations that generate
+`CREATE INDEX IF NOT EXISTS` SQL. This syntax is supported by PostgreSQL and
+MariaDB but **not by MySQL**. MySQL has never added `CREATE INDEX IF NOT EXISTS`
+to its syntax. The migration crashes, Airflow's init containers timeout waiting
+for it, and everything crash-loops.
+
+This isn't a version issue — MySQL 8.0, 8.1, 8.4 all have the same problem.
+
+## The fix: use SimpleAuthManager instead
+
+In Airflow 3, FAB is **no longer the default auth manager**. Airflow 3 ships with
+`SimpleAuthManager` as the built-in default, which bypasses FAB entirely. No FAB
+tables, no `CREATE INDEX IF NOT EXISTS`, no migration failure.
+
+The trick: if you're using the official Airflow Helm chart, it may default to FAB
+depending on which providers are installed. To explicitly skip FAB, set this in
+your Helm values:
+
+```yaml
+# Don't set auth_manager explicitly -- Airflow 3's default IS SimpleAuthManager.
+# If you set it explicitly in some chart versions, it fails to import.
+# Just don't install apache-airflow-providers-fab and you're done.
+```
+
+If SimpleAuthManager is already the default and FAB isn't in your image, you
+don't need to set anything. The migrations will run clean on MySQL.
+
+## What SimpleAuthManager means for your setup
+
+- Users are configured via environment variables or a JSON file at
+  `$AIRFLOW_HOME/simple_auth_manager_passwords.json.generated`
+- Auto-generates random passwords for users defined in config
+- No web UI for user management
+- **Not for production** — but for a POC or internal cluster, it's fine
+
+## What still doesn't work
+
+If you need FAB (RBAC, OAuth, SSO), you're stuck. The only MySQL-compatible
+options at the time of writing are:
+- Use MariaDB instead (it supports `CREATE INDEX IF NOT EXISTS`)
+- Pin an older Flask-AppBuilder version that generates MySQL-compatible SQL
+- Pre-create the FAB tables manually with correct MySQL syntax before migration
+
+For a POC environment: SimpleAuthManager is the right call.

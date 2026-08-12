@@ -1,0 +1,58 @@
+---
+title: "Maven Surefire silently ignores test files whose names don't end in exactly 'Test'"
+date: 2026-02-26
+tags: [maven, junit, jacoco]
+---
+
+# Maven Surefire silently ignores test files whose names don't end in exactly "Test"
+
+I ran into this today in a frustrating way. I had a bunch of AI-generated test files to bring JaCoCo branch coverage up to 80%. The files compiled fine — I could see them in `target/test-classes`. But after a full `./mvnw clean install`, coverage was completely unchanged at 67%. The files existed, compiled, and... nothing.
+
+Turns out Maven Surefire has a default include pattern that only picks up test classes whose names match:
+
+```
+**/Test*.java
+**/*Test.java
+**/*Tests.java
+**/*TestCase.java
+```
+
+The files were named `OrderValidationCoverageTest1.java`, `OrderValidationCoverageTest2.java`, `OrderValidationCoverageTest3.java`. Those end in `Test1`, `Test2`, `Test3` — not `Test`. So Surefire compiled them (the compiler doesn't care about naming conventions) but the JUnit platform provider never discovered them as test classes.
+
+There are no warnings. The build doesn't say "hey, I found these compiled classes but they don't match my filter". They just silently don't run.
+
+## The fix
+
+Rename the files so they end in `Test.java` — i.e. the name ends **exactly** in `Test`, not `Test1` or `TestHelper` or `TestUtils`:
+
+```
+OrderValidationCoverageTest1.java  →  OrderValidationCoverage1Test.java
+OrderValidationCoverageTest2.java  →  OrderValidationCoverage2Test.java
+OrderValidationCoverageTest3.java  →  OrderValidationCoverage3Test.java
+```
+
+After the rename, 239 tests that had been silently skipped started running. Coverage jumped from 67% to 80%.
+
+## Why this matters
+
+This is especially nasty because nothing in the build output tells you something is wrong. The compile step says "Compiling 66 source files" (up from 62), so you know the files were found and compiled. But the test step just runs what Surefire picked up, and if no test classes match the pattern, they're gone without a trace.
+
+It's also easy to hit if you generate test files programmatically or use any naming convention that doesn't strictly end in `Test` — like `CoverageTest1`, `HelperTests`, or `MockedTest`.
+
+## Customising the pattern
+
+If you really want a different naming convention, you can override the includes in `pom.xml`:
+
+```xml
+<plugin>
+  <groupId>org.apache.maven.plugins</groupId>
+  <artifactId>maven-surefire-plugin</artifactId>
+  <configuration>
+    <includes>
+      <include>**/*Test*.java</include>
+    </includes>
+  </configuration>
+</plugin>
+```
+
+But I'd rather just name my test classes correctly. The convention is there for a reason and it's not worth fighting.

@@ -1,0 +1,79 @@
+---
+title: "Unquoted variables in fish's `test`/`[` cause 'Missing argument' errors in completion functions"
+date: 2026-08-03
+tags: [fish, gopass, shell]
+---
+
+# Unquoted variables in fish's `test`/`[` cause 'Missing argument' errors in completion functions
+
+I ran into a confusing error every time I tabbed to complete a `gopass` command in fish:
+
+```
+[: Missing argument at index 3
+gopass =
+         ^
+/opt/homebrew/share/fish/vendor_completions.d/gopass.fish (line 6):
+  if [ (count $cmd) -eq 1 -a $cmd[1] = $PROG ]
+```
+
+There were actually two separate bugs stacked on top of each other.
+
+## Bug 1: fish doesn't support `-a` in `[`
+
+The original gopass fish completion used POSIX's `-a` operator (logical AND inside `test`/`[`):
+
+```fish
+if [ (count $cmd) -eq 1 -a $cmd[1] = $PROG ]
+```
+
+Fish dropped `-a` and `-o` — they were deprecated in POSIX 2008 and fish never implemented them. The fix is to use two separate `[` calls with `&&`:
+
+```fish
+if [ (count $cmd) -eq 1 ] && [ $cmd[1] = $PROG ]
+```
+
+This is what the upstream gopass repo fixed in February 2026 (PRs #3336 and #3339), but at the time `gopass 1.16.1` (the current Homebrew bottle) predates that fix.
+
+## Bug 2: unquoted list variable vanishes when empty
+
+Even after applying the upstream fix, the error persisted but changed slightly:
+
+```
+[: Missing argument at index 3
+gopass =
+         ^
+  if [ (count $cmd) -eq 1 ] && [ $cmd[1] = gopass ]
+```
+
+Notice it's `gopass =` — the left side of the comparison is missing. In fish, if `$cmd[1]` is an empty list (which happens when `commandline -opc` returns nothing), an unquoted `$cmd[1]` expands to *nothing at all*, so `test` sees `[ = gopass ]` and errors.
+
+The fix is to quote it:
+
+```fish
+if [ (count $cmd) -eq 1 ] && [ "$cmd[1]" = gopass ]
+```
+
+With quotes, an empty list expands to `""` rather than disappearing, so `test` gets `[ "" = gopass ]` which correctly returns false.
+
+I also replaced `$PROG` with the literal `gopass` because `$PROG` is set at file load time as a global, but by the time the completion function runs, that global is gone from scope.
+
+## The actual fix
+
+Since the Homebrew vendor file can't be edited without it being overwritten on upgrade, the fix is to shadow it with a user completion:
+
+```fish
+curl -s "https://raw.githubusercontent.com/gopasspw/gopass/master/fish.completion" \
+  > ~/.config/fish/completions/gopass.fish
+```
+
+Then patch line 6:
+
+```fish
+# before
+if [ (count $cmd) -eq 1 ] && [ $cmd[1] = $PROG ]
+
+# after
+if [ (count $cmd) -eq 1 ] && [ "$cmd[1]" = gopass ]
+```
+
+Files in `~/.config/fish/completions/` shadow vendor completions from Homebrew, so this wins without touching the Homebrew-managed file. When `gopass 1.16.2+` lands in Homebrew with both fixes baked in, you can just delete the override.

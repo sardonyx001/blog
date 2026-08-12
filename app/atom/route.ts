@@ -6,24 +6,21 @@ export async function GET() {
   return new Response(
     `<?xml version="1.0" encoding="utf-8"?>
   <feed xmlns="http://www.w3.org/2005/Atom">
-    <title>Guillermo Rauch</title>
-    <subtitle>Essays</subtitle>
-    <link href="https://rauchg.com/atom" rel="self"/>
-    <link href="https://rauchg.com/"/>
-    <updated>${posts[0].date}</updated>
-    <id>https://rauchg.com/</id>
+    <title>jamell.dev</title>
+    <subtitle>Notes on backend engineering &amp; infrastructure</subtitle>
+    <link href="https://jamell.dev/atom" rel="self"/>
+    <link href="https://jamell.dev/"/>
+    <updated>${posts[0]?.date ?? ""}</updated>
+    <id>https://jamell.dev/</id>
     <author>
-      <name>Guillermo Rauch</name>
-      <email>rauchg@gmail.com</email>
+      <name>Jamel Eddine Lassoued</name>
     </author>
     ${posts.slice(0, max).reduce((acc, post) => {
-      const dateMatch = post.date.match(/\d{4}/);
-      if (!dateMatch) return "";
       return `${acc}
         <entry>
           <id>${post.id}</id>
           <title>${post.title}</title>
-          <link href="https://rauchg.com/${dateMatch[0]}/${post.id}"/>
+          <link href="https://jamell.dev/${post.year}/${post.id}"/>
           <updated>${post.date}</updated>
         </entry>`;
     }, "")}

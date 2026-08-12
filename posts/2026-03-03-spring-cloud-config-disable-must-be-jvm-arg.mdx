@@ -1,0 +1,64 @@
+---
+title: "Disabling Spring Cloud Config Server in application-local.yml is too late — use a JVM arg instead"
+date: 2026-03-03
+tags: [spring-boot, spring-cloud-config, java]
+---
+
+# Disabling Spring Cloud Config Server in application-local.yml is too late — use a JVM arg instead
+
+I was trying to run a Spring Boot 3 app locally that uses Spring Cloud Config Server. The app connects to a remote config server on the dev network, and I wanted to override its settings with my own `application-local.yml` so I could point MongoDB at the dev server instead of localhost.
+
+The config server was reachable (we're on VPN), so it was fetching the remote config and those values were winning over my local file. Even though I had:
+
+```yaml
+# application-local.yml
+spring:
+  data:
+    mongodb:
+      host: mongo.example.com
+      port: 27018
+```
+
+The app kept connecting to `localhost:27017` — from the remote config.
+
+## Why local properties lose
+
+In Spring Cloud Config, the config server acts as a high-priority property source. By design, remote config server properties **override** local `application-{profile}.yml` values. This is the intended behaviour for externalized configuration.
+
+I tried setting this in `application-local.yml`:
+
+```yaml
+spring:
+  cloud:
+    config:
+      enabled: false
+```
+
+Didn't work. The reason: `spring.config.import` in `application.yml` (the base config) triggers the config server fetch during the environment preparation phase — *before* profile-specific files like `application-local.yml` are even processed. So `enabled: false` in the profile file arrives too late to prevent the fetch.
+
+## The fix: pass it as a JVM system property
+
+System properties are evaluated *before* any config files, so this works:
+
+```bash
+./mvnw spring-boot:run \
+  -Dspring-boot.run.profiles=local \
+  "-Dspring-boot.run.jvmArguments=-Dspring.cloud.config.enabled=false"
+```
+
+With the config server fully disabled, Spring Boot falls back entirely to local files, and `application-local.yml` is the authoritative source. All the overrides work as expected.
+
+## One more gotcha: `uri` vs individual properties
+
+Even after disabling the config server, I tried setting `spring.data.mongodb.uri` in my local yml, but it was being ignored. Turns out when both `spring.data.mongodb.host/port` (set in the base `application.yml`) and `spring.data.mongodb.uri` are present, Spring Boot's MongoDB autoconfiguration resolves the individual host/port properties separately and they take precedence over `uri`. The fix was to override the individual properties instead:
+
+```yaml
+spring:
+  data:
+    mongodb:
+      host: mongo.example.com
+      port: 27018
+      username: myapp_user
+      password: myapp_pass
+      database: myapp
+```

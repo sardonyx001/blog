@@ -1,36 +1,17 @@
-export const runtime = "edge";
-
 import { ImageResponse } from "next/og";
 import { getPosts } from "@/app/get-posts";
+import {
+  loadInter300,
+  loadInter500,
+  loadInter600,
+  loadRobotoMono400,
+} from "@/lib/og-fonts";
 
 // fonts
-const inter300 = fetch(
-  new URL(
-    `../../../../node_modules/@fontsource/inter/files/inter-latin-300-normal.woff`,
-    import.meta.url
-  )
-).then(res => res.arrayBuffer());
-
-const inter500 = fetch(
-  new URL(
-    `../../../../node_modules/@fontsource/inter/files/inter-latin-500-normal.woff`,
-    import.meta.url
-  )
-).then(res => res.arrayBuffer());
-
-const inter600 = fetch(
-  new URL(
-    `../../../../node_modules/@fontsource/inter/files/inter-latin-600-normal.woff`,
-    import.meta.url
-  )
-).then(res => res.arrayBuffer());
-
-const robotoMono400 = fetch(
-  new URL(
-    `../../../../node_modules/@fontsource/roboto-mono/files/roboto-mono-latin-400-normal.woff`,
-    import.meta.url
-  )
-).then(res => res.arrayBuffer());
+const inter300 = loadInter300();
+const inter500 = loadInter500();
+const inter600 = loadInter600();
+const robotoMono400 = loadRobotoMono400();
 
 export async function GET(_req: Request, { params: { id } }) {
   const posts = await getPosts();
@@ -47,10 +28,10 @@ export async function GET(_req: Request, { params: { id } }) {
       >
         <header tw="flex text-[36px] w-full">
           <div tw="font-bold" style={font("Inter 600")}>
-            Guillermo Rauch
+            Jamel Eddine Lassoued
           </div>
           <div tw="grow" />
-          <div tw="text-[28px]">rauchg.com</div>
+          <div tw="text-[28px]">jamell.dev</div>
         </header>
 
         <main tw="flex grow pb-3 flex-col items-center justify-center">

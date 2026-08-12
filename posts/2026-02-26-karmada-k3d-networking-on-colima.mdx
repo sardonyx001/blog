@@ -1,0 +1,271 @@
+---
+title: "Karmada member clusters need manual networking fixes when running on k3d + Colima"
+date: 2026-02-26
+tags: [kubernetes, karmada, k3d, colima, airflow]
+---
+
+# Karmada member clusters need manual networking fixes when running on k3d + Colima
+
+I spent a day getting Karmada to federate k3d clusters on Colima, then deploying Airflow
+across two federated clusters to test HA scheduler failover. Here's every failure I hit
+and what I learned.
+
+## The setup
+
+- macOS (Apple Silicon, M4 Pro, 48 GB RAM) with Colima as Docker runtime (10 CPU / 24 GB)
+- 3 k3d clusters: `karmada-host`, `cluster-a`, `cluster-b`
+- Karmada installed via Helm on `karmada-host`
+- CloudNativePG 3-node HA PostgreSQL on `karmada-host`
+- Apache Airflow on both `cluster-a` (active) and `cluster-b` (standby), sharing the same DB
+- Goal: test Airflow scheduler HA and failover across clusters
+
+---
+
+## Problem 1: `karmadactl init` is broken on macOS
+
+`karmadactl init` hardcodes `/etc/karmada` as its data directory and tries to delete it
+at startup regardless of the `-d` flag. On macOS, deleting from `/etc` requires write
+permission on the parent (`/etc`), which is root-owned. Even with `sudo mkdir /etc/karmada
+&& sudo chown $USER /etc/karmada`, it still fails because `unlinkat` needs the parent
+to be writable.
+
+**Fix:** Use the Helm chart instead.
+
+```bash
+helm install karmada karmada-charts/karmada \
+  --namespace karmada-system \
+  --set apiServer.serviceType=NodePort \
+  --set apiServer.nodePort=30443 \
+  --timeout=300s
+```
+
+Note: create the k3d cluster with `-p "5443:30443@loadbalancer"` so the Karmada API
+server is accessible from macOS at `127.0.0.1:5443`.
+
+---
+
+## Problem 2: Helm `--wait` always times out on Karmada install
+
+Helm's `--wait` hangs because the `karmada-static-resource` Job self-deletes after
+completion (Helm hook with delete-after-complete policy). Helm can't observe it and
+reports a timeout. The install actually succeeded — just check `kubectl get pods -n karmada-system`.
+All 7 pods Running = success.
+
+---
+
+## Problem 3: `too many open files` in the Karmada webhook
+
+The webhook pod crash-loops with `too many open files`. Two separate limits are too low:
+
+**1. Docker container ulimit** — add to `~/.colima/default/colima.yaml`:
+```yaml
+docker:
+  default-ulimits:
+    nofile:
+      name: nofile
+      soft: 1048576
+      hard: 1048576
+```
+
+**2. inotify user instances** — the kernel parameter `fs.inotify.max_user_instances`
+defaults to 128 inside Colima's VM. With 3 k3d clusters and all the Karmada watchers,
+this is hit almost immediately.
+
+```bash
+colima ssh -- sudo sysctl -w fs.inotify.max_user_instances=1024
+```
+
+To persist across Colima restarts, add to `colima.yaml`:
+```yaml
+provision:
+  - mode: system
+    script: sysctl -w fs.inotify.max_user_instances=1024
+```
+
+After fixing both, delete the crash-looping pod and it recovers.
+
+---
+
+## Problem 4: clusters join but stay `ClusterNotReachable`
+
+k3d creates each cluster in its own isolated Docker bridge network:
+
+```
+k3d-karmada-host  -> karmada-host container: 172.19.0.3
+k3d-cluster-a     -> cluster-a container:    172.20.0.3
+k3d-cluster-b     -> cluster-b container:    172.21.0.3
+```
+
+The Karmada controller-manager runs inside `karmada-host`. When you run
+`karmadactl join`, Karmada stores the member cluster's kubeconfig with the address
+`0.0.0.0:PORT` (k3d's host-mapped API server port). From macOS that works fine. From
+inside the karmada-host Docker container, `0.0.0.0` goes nowhere.
+
+The `Cluster` resource also has a `.spec.apiEndpoint` field that caches this address —
+that's what the controller actually reads, not just the secret. And the secrets are in
+`karmada-cluster` namespace, not `karmada-system` (I wasted 20 minutes on that).
+
+**Fix in three parts:**
+
+**Part A** — Connect karmada-host to the cluster networks directly:
+```bash
+docker network connect k3d-cluster-a k3d-karmada-host-server-0
+docker network connect k3d-cluster-b k3d-karmada-host-server-0
+```
+
+**Part B** — Patch the `Cluster` resources with cert-valid internal IPs
+(k3s generates TLS certs for the original cluster network IPs, not a shared mesh):
+```bash
+CLUSTER_A_IP=$(docker inspect k3d-cluster-a-server-0 \
+  --format '{{(index .NetworkSettings.Networks "k3d-cluster-a").IPAddress}}')
+
+kubectl --kubeconfig ~/.kube/karmada-apiserver.config patch cluster cluster-a \
+  --type='json' \
+  -p="[{\"op\":\"replace\",\"path\":\"/spec/apiEndpoint\",\"value\":\"https://${CLUSTER_A_IP}:6443\"}]"
+```
+
+**Part C** — Patch the stored kubeconfig secrets:
+```bash
+CLUSTER_A_HOST_ADDR=$(kubectl config view --context k3d-cluster-a --raw \
+  -o jsonpath='{.clusters[?(@.name=="k3d-cluster-a")].cluster.server}')
+
+kubectl --kubeconfig ~/.kube/karmada-apiserver.config \
+  get secret cluster-a -n karmada-cluster \
+  -o jsonpath='{.data.kubeconfig}' | base64 -d \
+  | sed "s|${CLUSTER_A_HOST_ADDR}|https://${CLUSTER_A_IP}:6443|g" \
+  | base64 | tr -d '\n' > /tmp/patch.b64
+
+kubectl --kubeconfig ~/.kube/karmada-apiserver.config \
+  patch secret cluster-a -n karmada-cluster \
+  --type='json' \
+  -p="[{\"op\":\"replace\",\"path\":\"/data/kubeconfig\",\"value\":\"$(cat /tmp/patch.b64)\"}]"
+```
+
+After both patches, the controller picks up the new addresses within ~10s and clusters go `Ready`.
+
+---
+
+## Problem 5: cross-cluster service access (Airflow -> PostgreSQL)
+
+Airflow runs in `cluster-a` and `cluster-b`. PostgreSQL runs in `karmada-host`. The
+ClusterIP service on `karmada-host` is not reachable from the other clusters.
+
+The fix I ended up with: create a shared Docker network (`karmada-mesh`) connecting all
+three server containers, then expose PostgreSQL as a NodePort. Pods in cluster-a/b can
+reach karmada-host's mesh IP at the NodePort:
+
+```bash
+docker network create karmada-mesh
+docker network connect karmada-mesh k3d-karmada-host-server-0
+docker network connect karmada-mesh k3d-cluster-a-server-0
+docker network connect karmada-mesh k3d-cluster-b-server-0
+```
+
+Then expose PostgreSQL as a NodePort (port 30432) and pods connect to
+`<karmada-host-mesh-ip>:30432`.
+
+The reason I needed BOTH the direct cluster network connections (Problem 4) AND the mesh
+network: the direct connections are for TLS cert validity (Karmada controller to member
+clusters), and the mesh is for application traffic (Airflow pods to PostgreSQL).
+
+---
+
+## Airflow multi-cluster HA: how the shared Fernet key works
+
+Both Airflow instances must have identical `fernetKey` and `webserverSecretKey` because
+they share one database. If you let Helm auto-generate keys per cluster (the default),
+cluster-b can't decrypt connection passwords that cluster-a encrypted into the DB.
+
+Pre-generate and set them in a shared values file:
+
+```bash
+python3 -c "
+from cryptography.fernet import Fernet
+import secrets
+print('fernetKey:', Fernet.generate_key().decode())
+print('webserverSecretKey:', secrets.token_hex(32))
+"
+```
+
+To retrieve from an existing install: `kubectl get secret airflow-fernet-key -n airflow -o jsonpath="{.data.fernet-key}" | base64 --decode`
+
+---
+
+## Airflow Helm chart: `extraVolumes` must be declared per-component
+
+In Airflow 3's Helm chart, top-level `extraVolumes` does not get inherited by the
+`dagProcessor` component. Each component needs its own `extraVolumes`:
+
+```yaml
+# This does NOT work for dagProcessor:
+extraVolumes:
+  - name: my-dag
+    configMap:
+      name: my-dag
+
+# This works:
+dagProcessor:
+  extraVolumes:
+    - name: my-dag
+      configMap:
+        name: my-dag
+  extraVolumeMounts:
+    - name: my-dag
+      mountPath: /opt/airflow/dags/my_dag.py
+      subPath: my_dag.py
+
+scheduler:
+  extraVolumes:
+    - name: my-dag
+      configMap:
+        name: my-dag
+  extraVolumeMounts:
+    - name: my-dag
+      mountPath: /opt/airflow/dags/my_dag.py
+      subPath: my_dag.py
+```
+
+Also: create the ConfigMap BEFORE `helm install`. If the values reference a ConfigMap
+that doesn't exist, the install fails silently on the Deployment.
+
+---
+
+## Airflow HA failover: at-least-once, not exactly-once
+
+Tested with a real DAG (`failover_test`, runs every 2 minutes, each task sleeps 30s).
+Killed cluster-a while step_1 was mid-execution.
+
+What happened:
+- cluster-b restarted the orphaned step_1 from scratch ~1m45s after the kill
+- the next scheduled run also fired as normal
+- both step_1s ran concurrently for ~15 seconds
+- both runs completed successfully, all tasks `success`
+
+The DB query to see this:
+```sql
+SELECT run_id, task_id, state, start_date, end_date
+FROM task_instance
+WHERE dag_id='failover_test'
+ORDER BY start_date DESC LIMIT 10;
+```
+
+**The takeaway:** Airflow guarantees that orphaned tasks will eventually run. It does NOT
+guarantee they run exactly once. A mid-execution task will be restarted from the
+beginning, not resumed. Every task you migrate from a cronjob must be idempotent.
+
+Failover metrics observed:
+- cluster-b detects dead scheduler: ~30s (heartbeat expiry)
+- cluster-a rejoin after restart: ~14s
+- task re-execution after kill: ~1m45s
+
+---
+
+## Final state
+
+```
+cluster-a   v1.33.6+k3s1   Push   True  -- Airflow active (scheduler + webserver)
+cluster-b   v1.33.6+k3s1   Push   True  -- Airflow standby (scheduler only)
+airflow-db  3/3 instances   Cluster in healthy state  -- CNPG HA PostgreSQL
+```
+
+Total time: about 8 hours. Most of it networking and Helm chart quirks.

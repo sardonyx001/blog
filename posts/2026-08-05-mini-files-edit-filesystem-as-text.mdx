@@ -1,0 +1,37 @@
+---
+title: "mini.files lets you rename, create, and delete files by editing directory buffers like text"
+date: 2026-08-05
+tags: [neovim, mini.files, file-explorer]
+---
+
+# mini.files lets you rename, create, and delete files by editing directory buffers like text
+
+I switched from neo-tree to mini.files in my Neovim config today and the interaction model is completely different — and honestly really clever once it clicks.
+
+Instead of a sidebar with custom keymaps for "rename this file", mini.files opens the directory listing as a regular Neovim buffer. You edit the text, then "save" it, and mini.files figures out what filesystem operations to perform based on what changed.
+
+## Basic operations
+
+**Rename a file** — move your cursor to the filename and edit it with any normal Neovim text motion. `ciw` to change the word, `A` to append, whatever. When you're done, press `=` to apply.
+
+**Create a file** — add a new line in the directory buffer with the filename you want. Press `=` to apply, it creates the file.
+
+**Create a directory** — same as creating a file, but end the name with `/`. mini.files sees the trailing slash and creates a directory.
+
+**Delete a file** — `dd` the line. Press `=` to apply.
+
+**Move or copy a file** — yank or cut the line, navigate to a different directory pane (mini.files shows a column-style browser, so you can navigate into subdirs), paste the line there, then apply with `=`.
+
+The key insight is that nothing happens immediately. You make all your edits as if you're editing text, then `=` applies all the pending changes at once. If you want to cancel, just close the buffer without applying.
+
+## Show all keymaps
+
+`g?` opens a help float with every available binding. I always forget this exists but it's really useful — it lists things like `<CR>` to open a file, `<BS>` to go up a directory, `gs` to set cwd, etc.
+
+## A few things that surprised me
+
+The explorer opens in a column browser style (like macOS Finder's column view), not a tree. Navigating into a directory opens a new column to the right rather than expanding inline. Takes a minute to get used to but it's actually nicer for deep directory structures.
+
+The dotfiles toggle is `g.` — hides/shows dot-files and dot-dirs. I configured mine to hide dot-dirs by default but show dot-files, since things like `.env` are useful to see but `.git`, `.idea` etc. are just noise.
+
+Renaming and moving both go through the same buffer-edit mechanism, which means if you rename a file that's open in another buffer, mini.files fires a `MiniFilesActionRename` event that you can hook into for LSP rename updates (Snacks.rename handles this automatically with the LazyVim setup).
