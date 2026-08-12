@@ -7,6 +7,32 @@
 //   python3 scripts/ascii-art.py --cols 62 \
 //     --source scripts/ascii-source/lain-source-cropped.png \
 //     --out scripts/lain-ascii-final.txt
+// The ramp above runs light→dense (' ░▒▓█'), but ' ' is not "the lightest
+// tone" — it's the source PNG's actual transparent background (alpha < 0.25,
+// see ascii-art.py), i.e. "no subject pixel here at all." That already
+// renders correctly on any backdrop, light or dark, since it's just empty.
+// Only the four *opaque* levels encode light↔dense subject tone, and those
+// are what need mirroring for a dark backdrop: on light paper, dense glyphs
+// read as dark ink (hair/eyes), so on a dark backdrop the opaque range flips
+// — dense/bright glyphs now mark the light source pixels (skin), and the
+// darkest subject pixels fade toward sparse, the same way pencil-on-black
+// only needs strokes for what's light. (First attempt at this mirrored ' '
+// into the swap too, which turned the transparent background into a solid
+// block — fixed by excluding it.)
+const DENSITY_MIRROR: Record<string, string> = {
+  "░": "█",
+  "▒": "▓",
+  "▓": "▒",
+  "█": "░",
+};
+
+function mirrorDensity(art: string): string {
+  return art
+    .split("")
+    .map(ch => DENSITY_MIRROR[ch] ?? ch)
+    .join("");
+}
+
 export const LAIN_ASCII = `                         ███████████████
                      ███████████████████████
                   ████████████████████████████
@@ -40,3 +66,5 @@ export const LAIN_ASCII = `                         █████████�
             █████████████████████████████████████
         ██████████████████████████████████████████████
 `;
+
+export const LAIN_ASCII_DARK = mirrorDensity(LAIN_ASCII);
