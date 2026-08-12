@@ -28,7 +28,7 @@ jobs:
       uses: actions/cache@v3
       with:
         path: .next/cache
-        key: ${{ runner.os }}-nextjs-cache-${{ hashFiles('**/*') }}
+        key: ${{ runner.os }}-nextjs-cache-${{ hashFiles('pnpm-lock.yaml') }}
         restore-keys: |
           ${{ runner.os }}-nextjs-cache-
     - name: Build Next.js
