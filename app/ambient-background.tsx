@@ -11,8 +11,8 @@ import { useEffect, useRef } from "react";
 // distraction. See CONTENT_PANEL usage across the app for how foreground
 // text stays crisp regardless of what the sim is doing behind it.
 const CENTER_PULL = 0.005;
-const FRIEND_STEP_FRAC = 0.02;
-const ENEMY_STEP_FRAC = 0.01;
+const FRIEND_STEP_FRAC = 0.025;
+const ENEMY_STEP_FRAC = 0.013;
 const SOFTEN_FRAC = 0.01;
 const RECHOOSE_CHANCE_PER_FRAME = 0.0015;
 const FLASH_DECAY = 0.92;
@@ -22,9 +22,22 @@ const FLASH_DECAY = 0.92;
 // A full viewport is much bigger, so we scale dot count by area instead of
 // using a fixed count, clamped to keep things smooth on very large/small
 // screens.
-const PX_PER_DOT = 5500;
-const MIN_DOTS = 220;
-const MAX_DOTS = 900;
+const PX_PER_DOT = 3800;
+const MIN_DOTS = 260;
+const MAX_DOTS = 1200;
+
+// click/tap "disturbance" — an expanding ring that shoves nearby dots
+// outward as it passes through them, then lets the normal friend/enemy
+// physics pull things back into formation. Attached on `window` (the
+// canvas itself is pointer-events-none) so it doesn't block real clicks
+// on links/buttons — it's purely decorative on top of whatever was clicked.
+const MAX_RIPPLES = 6;
+const RIPPLE_LIFETIME_MS = 900;
+const RIPPLE_MAX_RADIUS_FRAC = 0.9;
+const RIPPLE_BAND_FRAC = 0.16;
+const RIPPLE_FORCE_FRAC = 0.16;
+
+type Ripple = { x: number; y: number; createdAt: number };
 
 type Dot = {
   x: number;
@@ -106,6 +119,13 @@ export function AmbientBackground() {
     }
     document.addEventListener("visibilitychange", onVisibility);
 
+    let ripples: Ripple[] = [];
+    function onPointerDown(e: PointerEvent) {
+      ripples.push({ x: e.clientX * dpr, y: e.clientY * dpr, createdAt: performance.now() });
+      if (ripples.length > MAX_RIPPLES) ripples.shift();
+    }
+    window.addEventListener("pointerdown", onPointerDown);
+
     let stopped = false;
 
     function step() {
@@ -125,6 +145,22 @@ export function AmbientBackground() {
       const enemyStep = ENEMY_STEP_FRAC * scale;
       const soften = SOFTEN_FRAC * scale;
       const dots = dotsRef;
+
+      const now = performance.now();
+      if (ripples.length > 0) {
+        ripples = ripples.filter(r => now - r.createdAt < RIPPLE_LIFETIME_MS);
+      }
+      const activeRipples = ripples.map(r => {
+        const age = (now - r.createdAt) / RIPPLE_LIFETIME_MS;
+        return {
+          x: r.x,
+          y: r.y,
+          ringRadius: RIPPLE_MAX_RADIUS_FRAC * scale * age,
+          intensity: 1 - age,
+        };
+      });
+      const ripplePush = RIPPLE_FORCE_FRAC * scale;
+      const rippleBand = RIPPLE_BAND_FRAC * scale;
 
       for (let i = 0; i < dots.length; i++) {
         if (Math.random() < RECHOOSE_CHANCE_PER_FRAME) {
@@ -155,6 +191,21 @@ export function AmbientBackground() {
         nx += (enemyStep * ex) / (soften + eDist);
         ny += (enemyStep * ey) / (soften + eDist);
 
+        for (let ri = 0; ri < activeRipples.length; ri++) {
+          const r = activeRipples[ri];
+          const rdx = d.x - r.x;
+          const rdy = d.y - r.y;
+          const dist = Math.sqrt(rdx * rdx + rdy * rdy) || 1e-6;
+          const edgeDist = Math.abs(dist - r.ringRadius);
+          if (edgeDist < rippleBand) {
+            const proximity = 1 - edgeDist / rippleBand;
+            const push = ripplePush * r.intensity * proximity;
+            nx += (rdx / dist) * push;
+            ny += (rdy / dist) * push;
+            d.flash = Math.max(d.flash, proximity * r.intensity);
+          }
+        }
+
         d.nextX = nx;
         d.nextY = ny;
         d.vx = nx - d.x;
@@ -170,18 +221,18 @@ export function AmbientBackground() {
       ctx.clearRect(0, 0, w, h);
 
       const isDark = document.documentElement.classList.contains("dark");
-      const baseR = 1.5 * dpr;
+      const baseR = 1.7 * dpr;
       for (let i = 0; i < dots.length; i++) {
         const d = dots[i];
         // narrow pastel-blue hue band (not the original's full rainbow) —
         // heading still perturbs it a little so motion still reads visually,
         // just subtly instead of as a rainbow strobe
         const heading = Math.atan2(d.vy, d.vx);
-        const hueJitter = (Math.sin(heading) * 18 + 18) / 2;
+        const hueJitter = (Math.sin(heading) * 26 + 26) / 2;
         const hue = 208 + hueJitter;
-        const lightness = (isDark ? 62 : 48) + d.flash * 18;
-        const alpha = (isDark ? 0.32 : 0.28) + d.flash * 0.35;
-        const r = baseR + d.flash * 1.8 * dpr;
+        const lightness = (isDark ? 66 : 46) + d.flash * 20;
+        const alpha = (isDark ? 0.46 : 0.4) + d.flash * 0.4;
+        const r = baseR + d.flash * 2.2 * dpr;
         ctx.fillStyle = `hsla(${hue.toFixed(1)}, 70%, ${lightness.toFixed(1)}%, ${alpha.toFixed(2)})`;
         ctx.beginPath();
         ctx.arc(d.x, d.y, r, 0, Math.PI * 2);
@@ -197,6 +248,7 @@ export function AmbientBackground() {
       cancelAnimationFrame(raf);
       window.removeEventListener("resize", resize);
       document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("pointerdown", onPointerDown);
     };
   }, []);
 
