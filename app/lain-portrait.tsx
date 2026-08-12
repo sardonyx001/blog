@@ -14,6 +14,14 @@ import { LAIN_ASCII, LAIN_ASCII_DARK } from "./lain-ascii";
 // and the panel itself uses `content-panel` (the same translucent backdrop
 // used elsewhere) so it blends with the page instead of standing out as a
 // fixed white/black block.
+//
+// `leading` is a unitless multiplier, not `rem` — `rem` is relative to the
+// *root* font-size, not this element's own tiny 4.6px one, so if a desktop
+// browser's minimum-font-size setting bumps this element's font-size up
+// (common on desktop, rare on mobile) a rem-based line-height wouldn't
+// track it and the character grid would misalign/desync from the intended
+// aspect. A unitless line-height always scales with whatever font-size
+// actually gets applied.
 export function LainPortrait() {
   return (
     <div className="rounded-lg mb-6 overflow-hidden border border-black/10 dark:border-white/10 shadow-sm max-w-[220px] mx-auto sm:mx-0">
@@ -23,14 +31,14 @@ export function LainPortrait() {
       <div className="content-panel flex justify-center px-2 py-3">
         <pre
           aria-label="ASCII art portrait inspired by Lain Iwakura from Serial Experiments Lain"
-          className="leading-[0.52rem] tracking-[0.01em] select-none whitespace-pre font-mono dark:hidden"
+          className="leading-[1.81] tracking-[0.01em] select-none whitespace-pre font-mono dark:hidden"
           style={{ fontSize: "4.6px", color: "#4f74c4" }}
         >
           {LAIN_ASCII}
         </pre>
         <pre
           aria-label="ASCII art portrait inspired by Lain Iwakura from Serial Experiments Lain"
-          className="hidden leading-[0.52rem] tracking-[0.01em] select-none whitespace-pre font-mono dark:block"
+          className="hidden leading-[1.81] tracking-[0.01em] select-none whitespace-pre font-mono dark:block"
           style={{ fontSize: "4.6px", color: "var(--accent)" }}
         >
           {LAIN_ASCII_DARK}

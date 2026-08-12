@@ -11,11 +11,11 @@ import { useEffect, useRef } from "react";
 // distraction. See CONTENT_PANEL usage across the app for how foreground
 // text stays crisp regardless of what the sim is doing behind it.
 const CENTER_PULL = 0.005;
-const FRIEND_STEP_FRAC = 0.025;
-const ENEMY_STEP_FRAC = 0.013;
+const FRIEND_STEP_FRAC = 0.011;
+const ENEMY_STEP_FRAC = 0.0055;
 const SOFTEN_FRAC = 0.01;
-const RECHOOSE_CHANCE_PER_FRAME = 0.0015;
-const FLASH_DECAY = 0.92;
+const RECHOOSE_CHANCE_PER_FRAME = 0.0006;
+const FLASH_DECAY = 0.94;
 
 // density tuning for a full-viewport canvas (the original 500 dots were
 // calibrated for a ~600px square demo box, ~360k px^2 -> ~1 dot / 720 px^2).
