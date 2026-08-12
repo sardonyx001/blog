@@ -14,16 +14,15 @@ import { LAIN_ASCII } from "./lain-ascii";
 // the surrounding page.
 export function LainPortrait() {
   return (
-    <div className="rounded-lg mb-6 overflow-hidden border border-black/10 shadow-sm">
-      <div className="bg-[#12141a] px-4 py-2 flex items-center justify-between font-mono text-[10px] text-accent/80">
+    <div className="rounded-lg mb-6 overflow-hidden border border-black/10 shadow-sm max-w-[220px] mx-auto sm:mx-0">
+      <div className="bg-[#12141a] px-3 py-1.5 flex items-center justify-between font-mono text-[8px] text-accent/80">
         <span>~/whoami.ascii</span>
-        <span className="hidden sm:inline">serial-experiments-lain.exe</span>
       </div>
-      <div className="bg-[#f3f2ee] flex justify-center px-2 py-4 sm:py-6">
+      <div className="bg-[#f3f2ee] flex justify-center px-2 py-3">
         <pre
           aria-label="ASCII art portrait inspired by Lain Iwakura from Serial Experiments Lain"
-          className="leading-[0.62rem] sm:leading-[0.72rem] tracking-[0.02em] select-none whitespace-pre font-mono"
-          style={{ fontSize: "5.4px", color: "#4f74c4" }}
+          className="leading-[0.52rem] tracking-[0.01em] select-none whitespace-pre font-mono"
+          style={{ fontSize: "4.6px", color: "#4f74c4" }}
         >
           {LAIN_ASCII}
         </pre>
