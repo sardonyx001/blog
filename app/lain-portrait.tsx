@@ -22,6 +22,16 @@ import { LAIN_ASCII, LAIN_ASCII_DARK } from "./lain-ascii";
 // track it and the character grid would misalign/desync from the intended
 // aspect. A unitless line-height always scales with whatever font-size
 // actually gets applied.
+//
+// The multiplier itself (1.02) is tuned so the rendered character cell's
+// width:height ratio matches CHAR_ASPECT (0.52) from ascii-art.py — that's
+// the ratio the script assumed when it computed how many rows to generate
+// for a given column count, so the whole grid reproduces the source image's
+// actual ~1:1 aspect ratio instead of being stretched. (A previous value,
+// 1.81, was inherited from the pre-shrink layout and never re-derived after
+// the font-size changed — it rendered a visibly tall, non-square portrait.)
+// If you change font-size, tracking, or the font itself, re-measure the
+// rendered char width via getBoundingClientRect() and recompute this.
 export function LainPortrait() {
   return (
     <div className="rounded-lg mb-6 overflow-hidden border border-black/10 dark:border-white/10 shadow-sm max-w-[220px] mx-auto sm:mx-0">
@@ -31,14 +41,14 @@ export function LainPortrait() {
       <div className="content-panel flex justify-center px-2 py-3">
         <pre
           aria-label="ASCII art portrait inspired by Lain Iwakura from Serial Experiments Lain"
-          className="leading-[1.81] tracking-[0.01em] select-none whitespace-pre font-mono dark:hidden"
+          className="leading-[1.02] tracking-[0.01em] select-none whitespace-pre font-mono dark:hidden"
           style={{ fontSize: "4.6px", color: "#4f74c4" }}
         >
           {LAIN_ASCII}
         </pre>
         <pre
           aria-label="ASCII art portrait inspired by Lain Iwakura from Serial Experiments Lain"
-          className="hidden leading-[1.81] tracking-[0.01em] select-none whitespace-pre font-mono dark:block"
+          className="hidden leading-[1.02] tracking-[0.01em] select-none whitespace-pre font-mono dark:block"
           style={{ fontSize: "4.6px", color: "var(--accent)" }}
         >
           {LAIN_ASCII_DARK}
