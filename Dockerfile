@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 FROM node:22-slim AS base
 ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
@@ -6,14 +7,22 @@ RUN corepack enable
 FROM base AS deps
 WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-RUN pnpm install --frozen-lockfile
+# BuildKit cache mounts persist across `docker compose build` runs on this
+# host (unlike a normal COPY layer, which only survives if nothing upstream
+# changed) — the pnpm content-addressable store means most packages are
+# already downloaded even when the lockfile shifts a little, and the
+# Next.js cache below turns most deploys into incremental rebuilds instead
+# of from-scratch ones.
+RUN --mount=type=cache,id=blog-pnpm-store,target=/pnpm/store \
+    pnpm install --frozen-lockfile
 
 FROM base AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
-RUN pnpm build
+RUN --mount=type=cache,id=blog-next-cache,target=/app/.next/cache \
+    pnpm build
 
 # Standalone runtime — the posts/ content collection is read straight off
 # disk at request time (fs.readdirSync in lib/posts.ts), not bundled by
