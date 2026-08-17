@@ -1,0 +1,21 @@
+app/header.tsx
+  s_a14316fd13bdd5::t_72119579e4e2c4 15
+app/footer.tsx
+  s_a14316fd13bdd5::t_fd0d91ed8d4d1d 10
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "f0defa2a6d197a3aa87ed680e3e9c5e45ba4da0e",
+  "prompts": {},
+  "sessions": {
+    "s_a14316fd13bdd5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "51de0334-c122-464b-a53f-0657600c6d2e",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "jam <lassouedjamel99@gmail.com>"
+    }
+  }
+}
