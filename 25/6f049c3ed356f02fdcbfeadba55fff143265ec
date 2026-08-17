@@ -1,0 +1,26 @@
+scripts/lain-ascii-final.txt
+  s_a14316fd13bdd5::t_b616d4b4469174 1-32
+app/lain-ascii.ts
+  s_a14316fd13bdd5::t_e9c99dd05c817a 5-6,10,23-26
+  s_a14316fd13bdd5::t_a04ebe7939a031 37-67
+  s_a14316fd13bdd5::t_bfa0f4bdf88b74 36
+scripts/ascii-art.py
+  s_a14316fd13bdd5::t_3a038873ccbe67 22
+  s_a14316fd13bdd5::t_e5593b6459919d 3-4,14
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "256f049c3ed356f02fdcbfeadba55fff143265ec",
+  "prompts": {},
+  "sessions": {
+    "s_a14316fd13bdd5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "51de0334-c122-464b-a53f-0657600c6d2e",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "jam <lassouedjamel99@gmail.com>"
+    }
+  }
+}
