@@ -7,7 +7,7 @@ export function Footer({ className = "" }: { className?: string }) {
     >
 
       <div className="grow text-left">
-        Jamel Eddine Lassoued (
+        _ (
         <A target="_blank" href="https://twitter.com/whyamihere001">
           @whyamihere001
         </A>
