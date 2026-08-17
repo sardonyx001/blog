@@ -1,0 +1,19 @@
+app/about/page.mdx
+  s_a14316fd13bdd5::t_1361f2cb7db769 4,6,10-11,15,17-18,20-21,24-25,32,36,39-40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "53edac7b4bb26b5699cfed37a59bdefeeca84d73",
+  "prompts": {},
+  "sessions": {
+    "s_a14316fd13bdd5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "51de0334-c122-464b-a53f-0657600c6d2e",
+        "model": "unknown"
+      },
+      "human_author": "jam <lassouedjamel99@gmail.com>"
+    }
+  }
+}
