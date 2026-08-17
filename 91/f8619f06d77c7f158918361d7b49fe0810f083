@@ -1,0 +1,37 @@
+app/ambient-animations/motes.ts
+  s_a14316fd13bdd5::t_946d05cfb36bb5 1-92
+app/ambient-animations/types.ts
+  s_a14316fd13bdd5::t_624adc45e4df9e 1-15
+app/ambient-animations/index.ts
+  s_a14316fd13bdd5::t_8aeb86d3bfb854 1-16
+app/ambient-background.tsx
+  s_a14316fd13bdd5::t_e8b0fae648718e 99
+  s_a14316fd13bdd5::t_10ab4cb5ab7b56 68-70,98
+  s_a14316fd13bdd5::t_6ca86cf772e938 22-26
+  s_a14316fd13bdd5::t_dd7fbbb0a45529 83,85
+  s_a14316fd13bdd5::t_1108cb437df39f 4-17,39,41-55,60,63-64,67,71-73,86-91,93,97,100-118
+app/ambient-animations/dot-grid-wave.ts
+  s_a14316fd13bdd5::t_41b1264d791319 1-29
+app/ambient-animations/orbiting-systems.ts
+  s_a14316fd13bdd5::t_eb216d0d82d5a8 1-42
+app/ambient-animations/star-twinkle.ts
+  s_a14316fd13bdd5::t_a78894d02db3fe 1-32
+app/ambient-animations/circuit-traces.ts
+  s_a14316fd13bdd5::t_cf5fcc65852cbc 1-72
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "91f8619f06d77c7f158918361d7b49fe0810f083",
+  "prompts": {},
+  "sessions": {
+    "s_a14316fd13bdd5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "51de0334-c122-464b-a53f-0657600c6d2e",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "jam <lassouedjamel99@gmail.com>"
+    }
+  }
+}
