@@ -1,5 +1,6 @@
 import { MDXRemote } from "next-mdx-remote/rsc";
 import remarkGfm from "remark-gfm";
+import rehypePrettyCode from "rehype-pretty-code";
 import { notFound } from "next/navigation";
 import { getAllPostsMeta, getPostBySlug } from "@/lib/posts";
 import { mdxComponents } from "@/mdx-components";
@@ -50,7 +51,12 @@ export default async function PostPage({
     <MDXRemote
       source={post.content}
       components={mdxComponents as React.ComponentProps<typeof MDXRemote>["components"]}
-      options={{ mdxOptions: { remarkPlugins: [remarkGfm] } }}
+      options={{
+        mdxOptions: {
+          remarkPlugins: [remarkGfm],
+          rehypePlugins: [[rehypePrettyCode, { theme: "tokyo-night", bypassInlineCode: true }]],
+        },
+      }}
     />
   );
 }
