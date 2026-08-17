@@ -1,0 +1,21 @@
+.gitignore
+  s_a14316fd13bdd5::t_62c0f4a11f5659 11-12
+CLAUDE.md
+  s_a14316fd13bdd5::t_85321db0baca0d 1-91
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "8517728ad58b077c127ca40f65200fa0b9aa4cdb",
+  "prompts": {},
+  "sessions": {
+    "s_a14316fd13bdd5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "51de0334-c122-464b-a53f-0657600c6d2e",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "jam <lassouedjamel99@gmail.com>"
+    }
+  }
+}
