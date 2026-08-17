@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
-Convert scripts/ascii-source/lain-source.png into dense Unicode block-character
-ASCII art, in the same style vin.gg used for its portrait (referenced in the
-site redesign spec) — pixel luminance sampled into a density-mapped character
+Convert scripts/ascii-source/lain-source.png into dot-art, halftone-style
+ASCII art — pixel luminance sampled into a density-mapped dot character
 ramp, monospace-aspect corrected (terminal glyphs are taller than wide, so we
 sample more columns than a naive square grid would give).
 
@@ -12,7 +11,7 @@ conversion candidates need clean silhouettes, not photographic detail; this
 cel-style image is close to ideal.
 
 Usage: python3 scripts/ascii-art.py [--cols N] [--out PATH]
-Writes a plain-text grid (spaces + ░▒▓█) to stdout / --out.
+Writes a plain-text grid (spaces + ·∘•●) to stdout / --out.
 """
 import argparse
 import sys
@@ -20,7 +19,7 @@ from pathlib import Path
 
 from PIL import Image
 
-RAMP = " ░▒▓█"  # light -> dense, index 0 reserved for transparent/background
+RAMP = " ·∘•●"  # light -> dense dots, index 0 reserved for transparent/background
 CHAR_ASPECT = 0.52  # terminal monospace glyphs are ~taller than wide
 
 

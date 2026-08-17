@@ -35,9 +35,6 @@ import { LAIN_ASCII, LAIN_ASCII_DARK } from "./lain-ascii";
 export function LainPortrait() {
   return (
     <div className="rounded-lg mb-6 overflow-hidden border border-black/10 dark:border-white/10 shadow-sm max-w-[220px] mx-auto sm:mx-0">
-      <div className="bg-[#12141a] px-3 py-1.5 flex items-center justify-between font-mono text-[8px] text-accent/80">
-        <span>~/whoami.ascii</span>
-      </div>
       <div className="content-panel flex justify-center px-2 py-3">
         <pre
           aria-label="ASCII art portrait inspired by Lain Iwakura from Serial Experiments Lain"
