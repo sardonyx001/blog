@@ -115,7 +115,7 @@ function List({ posts, sort }) {
 
                   <span className="grow dark:text-gray-100">{post.title}</span>
 
-                  <span className="text-gray-500 dark:text-gray-500 text-xs">
+                  <span className="text-gray-500 dark:text-gray-500 text-xs mr-2">
                     {post.viewsFormatted}
                   </span>
                 </span>

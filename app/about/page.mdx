@@ -1,54 +1,43 @@
 # About
 
 I'm a full stack engineer based in Tokyo, Japan, currently working on production
-reliability and infrastructure modernization for Rakuten Travel — Japan's #1
-online travel agency, part of Rakuten Group.
+reliability and infrastructure modernization.
 
-My path here went through Sasebo before Tokyo: an associate's degree in
+My path here went basically like: an associate's degree in
 Control Systems Engineering at the National Institute of Technology, Sasebo
 College (2020–2023), then a bachelor's in Computer Science and Intelligent
 Systems at Oita University (2023–2025). Along the way I picked up backend and
-full stack internships — a data-entry and reporting web app at Sigma-i, a
-route-search app built on real-time bus GTFS-RT data at MobileCreate, and a
-short Domain-Driven Design API project at Yumemi — before joining Rakuten
-Group as an Application Engineer in April 2025.
+full stack internships, Flask web app at Sigma-i for local governments' data needs, a
+route-search app built on bus GTFS-RT data at MobileCreate.
 
 ## What I work on
 
-At Rakuten, most of my time goes into keeping legacy production services
+Most of my time goes into keeping legacy production services
 healthy while they get modernized. That's meant leading Spring Boot 3.x
-upgrades across several services — breaking dependency changes, deprecated
-API migrations, pushing test coverage from around 10% to over 85%, and
+upgrades across several services, breaking dependency changes, deprecated
+API migrations, pushing test coverage to reasonable pcts, and
 performance testing along the way. It's also meant spearheading the migration
-of 1,600+ cron jobs off bare-metal VMs onto Kubernetes using Apache Airflow
-and `KubernetesPodOperator`, including a multi-cluster POC with custom
-logging, error propagation, and a CI/CD pipeline for DAG generation.
+of 1,600+ cron jobs off bare-metal VMs onto Kubernetes using Apache Airflow,
+with logging, error propagation, and a CI/CD pipeline for DAG generation.
 
 A good chunk of the job is also just chasing down slow things: profiling
-high-traffic services with Jennifer APM and SQL analysis, then rolling out
-OpenTelemetry and performance-testing tooling once I find the bottleneck. I
-built an MCP server that gives the team live access to Jennifer APM across 51
-production servers, which cut incident investigation time from hours to
-minutes — and a Claude Code plugin bridging Bitbucket, Confluence, and Jira to
-automate dependency investigation, now used by 30+ people across teams. I'm
-also involved in containerizing and migrating 100+ legacy Spring Boot services
-to Kubernetes.
+high-traffic services, then rolling out
+OpenTelemetry and performance-testing tooling once I find the bottleneck.
 
 ## Outside of work
 
 I like building infrastructure for myself as much as for my day job. This
 site runs on a small self-hosted platform I maintain on a single VPS — Caddy
 in front, Zitadel for SSO, everything else in Docker. The centerpiece is
-[Marsa](https://marsa.jamell.dev), a minimal self-hosted PaaS I built to
+_**Marsa**_, a minimal self-hosted PaaS I built to
 replace Coolify: it deploys Docker Compose apps with automatic TLS, GitHub
 push-to-deploy, Zitadel-backed SSO, JWT-protected APIs, and a goroutine-based
 async deploy worker pool underneath. I've also shipped smaller things like an
-Android app for offline kanji lookup using the KANJIDIC2 dictionary.
+Android app for offline kanji lookup using the KANJIDIC2 dictionary, unimaginatively named ["WhatsThisKanji"](https://github.com/Sardonyx001/whats-this-kanji) .
 
 Day to day I mostly reach for Java, Go, Python, and TypeScript, with Spring
-Boot, React/Next.js, Docker, and Kubernetes as the usual stack, backed by
-Postgres, MySQL, Oracle, MongoDB, or Elasticsearch depending on what's in
-front of me. I speak English, French, and Arabic fluently, and Japanese well
+Boot, React/Next.js, Docker, and Kubernetes as the usual stack. 
+I speak English, French, and Arabic fluently, and Japanese well
 enough to work in it day to day.
 
 ## Elsewhere
