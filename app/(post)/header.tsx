@@ -4,6 +4,7 @@ import { useSelectedLayoutSegments } from "next/navigation";
 import { useEffect, useRef } from "react";
 import { ago } from "time-ago";
 import useSWR from "swr";
+import Link from "next/link";
 import type { Post } from "@/app/get-posts";
 
 const fetcher = (url: string) => fetch(url).then(res => res.json());
@@ -52,6 +53,20 @@ export function Header({ posts }: { posts: Post[] }) {
           />
         </span>
       </p>
+
+      {post.tags.length > 0 && (
+        <p className="font-mono flex gap-2 text-xs mt-1.5">
+          {post.tags.map(tag => (
+            <Link
+              key={tag}
+              href={`/tags/${tag}`}
+              className="text-gray-500 dark:text-gray-500 hover:text-accent dark:hover:text-accent transition-colors"
+            >
+              #{tag}
+            </Link>
+          ))}
+        </p>
+      )}
     </>
   );
 }

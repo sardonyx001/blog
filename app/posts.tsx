@@ -9,12 +9,16 @@ type SortSetting = ["date" | "views", "desc" | "asc"];
 
 const fetcher = (url: string) => fetch(url).then(res => res.json());
 
-export function Posts({ posts: initialPosts }) {
+export function Posts({ posts: initialPosts, tag }: { posts: any[]; tag?: string }) {
   const [sort, setSort] = useState<SortSetting>(["date", "desc"]);
+  // `/api/posts` always returns every post — filtering happens client-side
+  // below so a tag page still reflects the periodic view-count refresh
+  // instead of freezing on the server-filtered initialPosts.
   const { data: posts } = useSWR("/api/posts", fetcher, {
     fallbackData: initialPosts,
     refreshInterval: 5000,
   });
+  const taggedPosts = tag ? posts.filter((post: any) => post.tags.includes(tag)) : posts;
 
   function sortDate() {
     setSort(sort => [
@@ -63,7 +67,7 @@ export function Posts({ posts: initialPosts }) {
           </button>
         </header>
 
-        <List posts={posts} sort={sort} />
+        <List posts={taggedPosts} sort={sort} />
       </main>
     </Suspense>
   );
