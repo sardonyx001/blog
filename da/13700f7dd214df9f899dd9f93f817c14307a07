@@ -1,0 +1,19 @@
+posts/2026-08-19-caddy-reverse-proxy-multiple-k3d-clusters-tls.mdx
+  s_40771db3b06c6f::t_58d176eb1bdbb7 1-58
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "da13700f7dd214df9f899dd9f93f817c14307a07",
+  "prompts": {},
+  "sessions": {
+    "s_40771db3b06c6f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ddc2752a-852e-4f40-92a8-fc4b07c18a92",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "jam <lassouedjamel99@gmail.com>"
+    }
+  }
+}
