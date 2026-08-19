@@ -54,7 +54,9 @@ export default async function PostPage({
       options={{
         mdxOptions: {
           remarkPlugins: [remarkGfm],
-          rehypePlugins: [[rehypePrettyCode, { theme: "tokyo-night", bypassInlineCode: true }]],
+          rehypePlugins: [
+            [rehypePrettyCode, { theme: "tokyo-night", bypassInlineCode: true, defaultLang: "text" }],
+          ],
         },
       }}
     />

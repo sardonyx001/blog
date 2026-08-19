@@ -14,13 +14,13 @@ The fix: don't let any single cluster own port 80. Give each cluster its own *un
 
 Create the cluster with an arbitrary host port instead of 80:
 
-```
+```bash
 k3d cluster create local -p "9080:80@loadbalancer"
 ```
 
 Then run Caddy as a brew service (`brew install caddy`, it ships with a launchd agent) and give it a `Caddyfile` that maps each cluster's domain suffix to its own port:
 
-```
+```caddyfile
 # local (k3d-local)
 *.local.test {
 	tls internal
@@ -38,7 +38,7 @@ Caddy is famous for automatic HTTPS via Let's Encrypt, but that requires a real,
 
 Turns out Caddy has a second, separate mechanism for exactly this situation: an **internal CA**. If you write the site block without an explicit scheme:
 
-```
+```caddyfile
 *.local.test {
 	tls internal
 	reverse_proxy localhost:9080
@@ -47,7 +47,7 @@ Turns out Caddy has a second, separate mechanism for exactly this situation: an 
 
 ...instead of forcing `http://*.local.test { ... }`, Caddy issues itself a local self-signed cert from its own internal CA and serves HTTPS on 443, auto-redirecting from 80. The one-time step is trusting that CA so your browser doesn't complain:
 
-```
+```bash
 caddy trust
 ```
 
