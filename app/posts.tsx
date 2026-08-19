@@ -98,33 +98,63 @@ function List({ posts, sort }) {
           !sortedPosts[i + 1] || getYear(sortedPosts[i + 1].date) !== year;
 
         return (
-          <li key={post.id}>
-            <Link href={`/${new Date(post.date).getFullYear()}/${post.id}`}>
-              <span
-                className={`flex transition-[background-color] hover:bg-gray-100 dark:hover:bg-[#242424] active:bg-gray-200 dark:active:bg-[#222] border-y border-gray-200 dark:border-[#313131]
+          // The row itself is one big link (the overlay below), but tag
+          // pills need their own links — can't nest an <a> inside another
+          // <a>. The overlay covers the whole row, and the visible content
+          // sits on top with `pointer-events-none` so clicks fall through
+          // to it everywhere *except* the tag pills, which opt back in with
+          // `pointer-events-auto`. That alone isn't enough though — the
+          // overlay is `absolute`, so it paints above the pills' plain
+          // static-positioned ancestors regardless of DOM order, and would
+          // still win the hit-test; `relative z-10` on the pills themselves
+          // puts them in front of it. `:hover`/`:active` on the overlay's
+          // ancestor (`.group`) still work — both bubble up from a
+          // hovered/pressed descendant per the CSS spec.
+          <li key={post.id} className="group relative">
+            <Link
+              href={`/${new Date(post.date).getFullYear()}/${post.id}`}
+              className="absolute inset-0"
+              aria-label={post.title}
+            />
+            <span
+              className={`pointer-events-none flex transition-[background-color] group-hover:bg-gray-100 dark:group-hover:bg-[#242424] group-active:bg-gray-200 dark:group-active:bg-[#222] border-y border-gray-200 dark:border-[#313131]
                 ${!firstOfYear ? "border-t-0" : ""}
                 ${lastOfYear ? "border-b-0" : ""}
               `}
+            >
+              <span
+                className={`py-3 flex grow items-start ${
+                  !firstOfYear ? "ml-14" : ""
+                }`}
               >
-                <span
-                  className={`py-3 flex grow items-center ${
-                    !firstOfYear ? "ml-14" : ""
-                  }`}
-                >
-                  {firstOfYear && (
-                    <span className="w-14 inline-block self-start shrink-0 text-gray-500 dark:text-gray-500">
-                      {year}
+                {firstOfYear && (
+                  <span className="w-14 inline-block self-start shrink-0 text-gray-500 dark:text-gray-500">
+                    {year}
+                  </span>
+                )}
+
+                <span className="grow flex flex-col gap-1">
+                  <span className="dark:text-gray-100">{post.title}</span>
+                  {post.tags.length > 0 && (
+                    <span className="flex gap-2 flex-wrap">
+                      {post.tags.map(tag => (
+                        <Link
+                          key={tag}
+                          href={`/tags/${tag}`}
+                          className="relative z-10 pointer-events-auto text-xs text-gray-500 dark:text-gray-500 hover:text-accent dark:hover:text-accent transition-colors"
+                        >
+                          #{tag}
+                        </Link>
+                      ))}
                     </span>
                   )}
+                </span>
 
-                  <span className="grow dark:text-gray-100">{post.title}</span>
-
-                  <span className="text-gray-500 dark:text-gray-500 text-xs mr-2">
-                    {post.viewsFormatted}
-                  </span>
+                <span className="text-gray-500 dark:text-gray-500 text-xs mr-2">
+                  {post.viewsFormatted}
                 </span>
               </span>
-            </Link>
+            </span>
           </li>
         );
       })}
