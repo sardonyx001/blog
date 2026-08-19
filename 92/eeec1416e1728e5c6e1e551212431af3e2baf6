@@ -1,0 +1,24 @@
+app/(post)/[year]/[slug]/page.tsx
+  s_a14316fd13bdd5::t_b41385ccd1b202 57-59
+posts/2026-08-19-caddy-reverse-proxy-multiple-k3d-clusters-tls.mdx
+  s_a14316fd13bdd5::t_5d6c64ff4e4535 23
+  s_a14316fd13bdd5::t_8b209702c0c181 50
+  s_a14316fd13bdd5::t_dab6f47e7179cb 17
+  s_a14316fd13bdd5::t_465769d246753f 41
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "92eeec1416e1728e5c6e1e551212431af3e2baf6",
+  "prompts": {},
+  "sessions": {
+    "s_a14316fd13bdd5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "51de0334-c122-464b-a53f-0657600c6d2e",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "jam <lassouedjamel99@gmail.com>"
+    }
+  }
+}
