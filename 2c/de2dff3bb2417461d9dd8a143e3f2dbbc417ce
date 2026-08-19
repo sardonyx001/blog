@@ -1,0 +1,32 @@
+lib/caddyfile-lang.ts
+  s_a14316fd13bdd5::t_9893a2588d8170 1-16
+package.json
+  s_a14316fd13bdd5::t_6914b89a55239e 27
+Dockerfile
+  s_a14316fd13bdd5::t_3821f4871c9efc 31-33,41
+app/(post)/[year]/[slug]/page.tsx
+  s_a14316fd13bdd5::t_234d381223becd 8
+  s_a14316fd13bdd5::t_dcce3912711b4d 4
+  s_a14316fd13bdd5::t_c27390a49903ef 60-65,72-74,76-78
+  s_a14316fd13bdd5::t_1221b992bd433b 66-71,75
+lib/grammars/caddyfile.tmLanguage.json
+  s_a14316fd13bdd5::t_b0ce9501980a0e 1-365
+pnpm-lock.yaml
+  s_a14316fd13bdd5::t_6499d4f32f5741 74-76,3554-3555,3574,3585,3589,3596,3600,3611
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "2cde2dff3bb2417461d9dd8a143e3f2dbbc417ce",
+  "prompts": {},
+  "sessions": {
+    "s_a14316fd13bdd5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "51de0334-c122-464b-a53f-0657600c6d2e",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "jam <lassouedjamel99@gmail.com>"
+    }
+  }
+}
