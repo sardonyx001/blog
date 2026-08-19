@@ -1,0 +1,25 @@
+app/tags/[tag]/page.tsx
+  s_a14316fd13bdd5::t_d96379f9a2eb32 1-40
+app/(post)/header.tsx
+  s_a14316fd13bdd5::t_27e948a9364f4f 56-69
+  s_a14316fd13bdd5::t_4c04cb2cda63e8 7
+app/posts.tsx
+  s_a14316fd13bdd5::t_321d94e3807044 12,14-16,21
+  s_a14316fd13bdd5::t_7b9cb65016b8ad 70
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "42aa1257d67c5923f00e3f8a85a4ab2285930654",
+  "prompts": {},
+  "sessions": {
+    "s_a14316fd13bdd5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "51de0334-c122-464b-a53f-0657600c6d2e",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "jam <lassouedjamel99@gmail.com>"
+    }
+  }
+}
