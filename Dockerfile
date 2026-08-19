@@ -28,7 +28,9 @@ RUN --mount=type=cache,id=blog-next-cache,target=/app/.next/cache \
 # disk at request time (fs.readdirSync in lib/posts.ts), not bundled by
 # webpack, so it has to be copied into the final image explicitly alongside
 # the standalone server output. OG-image fonts live in public/fonts/ (not
-# node_modules) for the same reason — see lib/og-fonts.ts.
+# node_modules) for the same reason — see lib/og-fonts.ts. Same story for
+# lib/grammars/: the Caddyfile TextMate grammar is fs.readFile'd at request
+# time by lib/caddyfile-lang.ts, not imported as a module.
 FROM node:22-slim AS runner
 WORKDIR /app
 ENV NODE_ENV=production
@@ -36,6 +38,7 @@ ENV NEXT_TELEMETRY_DISABLED=1
 
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/posts ./posts
+COPY --from=builder /app/lib/grammars ./lib/grammars
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
 
