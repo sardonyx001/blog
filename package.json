@@ -41,17 +41,6 @@
     "tailwindcss": "^3.3.1",
     "typescript": "^5.4.5"
   },
-  "pnpm": {
-    "peerDependencyRules": {
-      "ignoreMissing": [
-        "webpack",
-        "@mdx-js/loader"
-      ]
-    },
-    "onlyBuiltDependencies": [
-      "unrs-resolver"
-    ]
-  },
   "scripts": {
     "dev": "next dev -H 0.0.0.0",
     "build": "next build",

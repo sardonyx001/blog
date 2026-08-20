@@ -4,3 +4,7 @@ allowBuilds:
   unrs-resolver: true
 onlyBuiltDependencies:
   - unrs-resolver
+peerDependencyRules:
+  ignoreMissing:
+    - webpack
+    - "@mdx-js/loader"
