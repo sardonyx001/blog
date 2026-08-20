@@ -1,0 +1,19 @@
+app/header.tsx
+  s_a14316fd13bdd5::t_0853c5d7c51a7f 17
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "91dc00c7ff71e6f8fe3280ef6b6185e9147b2d42",
+  "prompts": {},
+  "sessions": {
+    "s_a14316fd13bdd5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "51de0334-c122-464b-a53f-0657600c6d2e",
+        "model": "unknown"
+      },
+      "human_author": "jam <lassouedjamel99@gmail.com>"
+    }
+  }
+}
