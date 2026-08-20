@@ -11,7 +11,8 @@
     --accent: #6f96e0;
     --accent-soft: #e7edf9;
 
-    font-family: "Inter", sans-serif;
+    /* base font-family comes from JetBrains Mono's `className` on <html>
+       in app/layout.tsx, not set here */
     -webkit-tap-highlight-color: rgba(0, 0, 0, 0);
     -webkit-tap-highlight-color: transparent;
     color-scheme: light;
@@ -32,12 +33,6 @@
 
   :root.pause-transitions * {
     transition-duration: 0ms !important;
-  }
-
-  @supports (font-variation-settings: normal) {
-    :root {
-      font-family: "Inter var", sans-serif;
-    }
   }
 }
 
