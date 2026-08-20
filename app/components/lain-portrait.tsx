@@ -2,7 +2,7 @@ import { LAIN_ASCII_DARK } from "./lain-ascii";
 
 // The homepage's visual centerpiece — a Serial Experiments Lain-inspired
 // ASCII portrait rendered in dot-density glyphs (see scripts/ascii-art.py +
-// app/lain-ascii.ts for how it's generated).
+// app/components/lain-ascii.ts for how it's generated).
 //
 // The panel background is *always* dark, regardless of the site's
 // light/dark theme. The density ramp only reads as a recognizable portrait
@@ -29,14 +29,21 @@ import { LAIN_ASCII_DARK } from "./lain-ascii";
 // actual ~1:1 aspect ratio instead of being stretched. If you change
 // font-size, tracking, or the font itself, re-measure the rendered char
 // width via getBoundingClientRect() and recompute this.
+//
+// Deliberately not using Tailwind's `font-mono` here — it's tied to
+// JetBrains Mono (see tailwind.config.js), whose glyph metrics don't match
+// what this grid was tuned against, so the portrait would misalign/distort.
+// Pinned to the system monospace stack it was actually measured with.
+const SYSTEM_MONOSPACE = "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace";
+
 export function LainPortrait() {
   return (
     <div className="rounded-lg mb-6 overflow-hidden border border-black/10 dark:border-white/10 shadow-sm max-w-[220px] mx-auto sm:mx-0">
       <div className="flex justify-center px-2 py-3" style={{ backgroundColor: "#17181a" }}>
         <pre
           aria-label="ASCII art portrait inspired by Lain Iwakura from Serial Experiments Lain"
-          className="leading-[1.02] tracking-[0.01em] select-none whitespace-pre font-mono"
-          style={{ fontSize: "4.6px", color: "#8fb4f0" }}
+          className="leading-[1.02] tracking-[0.01em] select-none whitespace-pre"
+          style={{ fontSize: "4.6px", color: "#8fb4f0", fontFamily: SYSTEM_MONOSPACE }}
         >
           {LAIN_ASCII_DARK}
         </pre>

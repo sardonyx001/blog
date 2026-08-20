@@ -1,13 +1,18 @@
 import "./globals.css";
 
-import { Inter } from "next/font/google";
-import { themeEffect } from "./theme-effect";
-import { Analytics } from "./analytics";
-import { Header } from "./header";
-import { Footer } from "./footer";
-import { AmbientBackground } from "./ambient-background";
+import { Inter, JetBrains_Mono } from "next/font/google";
+import { themeEffect } from "./components/theme-effect";
+import { Analytics } from "./components/analytics";
+import { Header } from "./components/header";
+import { Footer } from "./components/footer";
+import { AmbientBackground } from "./components/ambient-background";
 
 const inter = Inter({ subsets: ["latin"] });
+// exposed as a CSS var and wired into Tailwind's `font-mono` (see
+// tailwind.config.js) — most of the site's chrome (nav, footer, post list,
+// byline, tag pills) already uses `font-mono`, which previously fell back
+// to the browser's system monospace font since nothing overrode it.
+const jetbrainsMono = JetBrains_Mono({ subsets: ["latin"], variable: "--font-mono" });
 
 export const metadata = {
   title: "jamell.dev",
@@ -40,7 +45,7 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${inter.className} antialiased`}
+      className={`${inter.className} ${jetbrainsMono.variable} antialiased`}
       suppressHydrationWarning={true}
     >
       <head>

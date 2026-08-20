@@ -1,6 +1,6 @@
-import { Posts } from "./posts";
+import { Posts } from "./components/posts";
 import { getPosts } from "./get-posts";
-import { LainPortrait } from "./lain-portrait";
+import { LainPortrait } from "./components/lain-portrait";
 
 export const revalidate = 60;
 

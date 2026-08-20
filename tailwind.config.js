@@ -1,4 +1,5 @@
 const plugin = require("tailwindcss/plugin");
+const defaultTheme = require("tailwindcss/defaultTheme");
 
 /** @type {import('tailwindcss').Config} */
 module.exports = {
@@ -11,6 +12,12 @@ module.exports = {
         // globals.css so it re-themes automatically with light/dark mode
         accent: "var(--accent)",
         "accent-soft": "var(--accent-soft)",
+      },
+      fontFamily: {
+        // --font-mono comes from next/font/google in app/layout.tsx
+        // (JetBrains Mono) — falls back to Tailwind's default monospace
+        // stack if the var is ever unset.
+        mono: ["var(--font-mono)", ...defaultTheme.fontFamily.mono],
       },
     },
   },

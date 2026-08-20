@@ -1,4 +1,4 @@
-import { A } from "./(post)/components/a";
+import { A } from "../(post)/components/a";
 
 export function Footer({ className = "" }: { className?: string }) {
   return (

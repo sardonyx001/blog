@@ -1,5 +1,5 @@
 import { notFound } from "next/navigation";
-import { Posts } from "@/app/posts";
+import { Posts } from "@/app/components/posts";
 import { getPosts } from "@/app/get-posts";
 import { getAllPostsMeta } from "@/lib/posts";
 
