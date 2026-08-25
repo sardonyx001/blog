@@ -23,7 +23,7 @@ jobs:
           # fast-forward pull won't touch it even if a future commit on main
           # also changes that file.
           git fetch origin main
-          git merge --ff-only origin/main
+          git merge --ff-only origin/main || git update-ref refs/heads/main origin/main
       - name: Build and redeploy
         run: |
           set -euo pipefail
