@@ -1,18 +1,18 @@
 ---
-title: "What CockroachDB's Pebble repo actually does in CI, beyond the YAML"
+title: "Learning from what CockroachDB's Pebble repo actually does in CI"
 date: 2026-08-25
 tags: [ci, testing, go, github-actions]
 ---
 
-# What CockroachDB's Pebble repo actually does in CI, beyond the YAML
+# Learning from what CockroachDB's Pebble repo actually does in CI
 
-I went digging through [cockroachdb/pebble](https://github.com/cockroachdb/pebble)'s `.github/workflows` because I wanted to learn from a CI setup that's been battle-tested for years on a storage engine, where correctness bugs are the expensive kind. The workflow YAML itself is mostly plumbing. The interesting stuff is in the `Makefile` and `scripts/` directory that the YAML calls into. Here's what I found, roughly in order of how much I want to steal it.
+I went digging through [cockroachdb/pebble](https://github.com/cockroachdb/pebble)'s `.github/workflows` because I wanted to learn from a CI setup that's been battle-tested for years on a storage engine, where correctness bugs are the expensive kind. The YAML files mostly just trigger jobs and call scripts. The actual test logic lives in the `Makefile` and `scripts/` directory. Here's what I found, roughly in order of how much I want to steal it.
 
-## The shape of it: two speeds
+## Fast PR checks, slow nightly checks
 
 There's a fast PR gate (`ci.yaml`) and a slow nightly sweep (`nightlies.yaml` + friends). The PR gate runs on every push/PR and finishes in 5-10 minutes: build+test on Linux, lint (`go mod tidy` + format check), a no-invariants build, a no-cgo build, the race detector, and a macOS build. Anything expensive (ASAN, MSAN, cross-arch builds, full stress runs, cross-version compatibility) only runs nightly.
 
-What's neat is that the nightly workflows aren't copy-pasted per branch. Pebble maintains several release branches (`crl-release-25.4`, `26.1`, `26.2`, etc.) and each has its own `nightlies-XX.Y.yaml`, but all of them just call the *same* reusable workflow files (`tests.yaml`, `stress.yaml`, `instrumented.yaml`, `crossversion.yaml`, `s390x.yaml`, `cockroach-go.yaml`) via `workflow_call`, passing in `sha`, `go_version`, and `file_issue_branch` as inputs. One test definition, six release branches wrapping it with different parameters.
+The nightly workflows aren't copy-pasted per branch. Pebble maintains several release branches (`crl-release-25.4`, `26.1`, `26.2`, etc.) and each has its own `nightlies-XX.Y.yaml`, but all of them just call the *same* reusable workflow files (`tests.yaml`, `stress.yaml`, `instrumented.yaml`, `crossversion.yaml`, `s390x.yaml`, `cockroach-go.yaml`) via `workflow_call`, passing in `sha`, `go_version`, and `file_issue_branch` as inputs. One test definition, six release branches wrapping it with different parameters.
 
 ```yaml
 # nightlies.yaml (master)
@@ -38,9 +38,9 @@ Every nightly job also ends with a step like this:
     labels: "C-test-failure"
 ```
 
-Nobody's watching the Actions tab for a 2am nightly run, so instead of relying on that, a failure files (or updates) a GitHub issue labeled `C-test-failure`. If your CI has jobs that run unattended, this is the pattern: push failures into wherever your team actually looks, not into a dashboard nobody opens.
+Nobody's watching the Actions tab for a 2am nightly run I guess, so instead of relying on that, a failure files (or updates) a GitHub issue labeled `C-test-failure`. If your CI has jobs that run unattended, this is the pattern: push failures into wherever your team actually looks, not into a dashboard nobody opens.
 
-## Metamorphic testing is the real trick
+## Metamorphic testing
 
 Pebble's flagship testing technique lives in `internal/metamorphic`. Instead of writing `TestFoo` with a fixed expected output, it generates random sequences of database operations and checks invariants, like "two different code paths that should be equivalent actually agree," rather than "this call returns exactly X." For a storage engine, "correct" often isn't a fixed value, it's a consistency property, so this fits much better than table-driven tests would.
 
@@ -61,9 +61,9 @@ crossversion-meta:
 			--version 'HEAD,HEAD,head.test'
 ```
 
-This is how you fuzz for on-disk-format backwards-compatibility bugs without hand-writing "test that v1 can read v2's files": you generate random operations across two builds simultaneously and let the fuzzer find the incompatibility for you.
+This is how you fuzz for on-disk-format backwards-compatibility bugs without hand-writing "test that v1 can read v2's files": you generate random operations across two builds simultaneously and let the fuzzer find the incompatibility for you. This is my first time seeing something of the sort but then I guess it might be more common than I thought.
 
-## Testing that the safety net still works
+## Testing the crossversion test itself
 
 The part that impressed me most: `scripts/crossversion_smoke_test.sh` is a test *of the crossversion test*. It:
 
@@ -82,9 +82,9 @@ if [ "$PHASE2_FAILED" = false ]; then
 fi
 ```
 
-This is the general pattern worth stealing for anything in your own suite that's supposed to catch a rare, expensive class of bug but under normal operation never fires: periodically inject the bug on purpose and check your detector still detects it. A test that never fails is indistinguishable from a broken test until you deliberately break something.
+If the crossversion test never fires under normal operation, you won't notice when it silently breaks.
 
-## Stress the diff, not the whole suite
+## Stress testing new tests before merging
 
 On every PR (`ci.yaml`'s `stress-new-tests` job), `scripts/stress-new-tests.sh` diffs against the base branch, pulls out only the *newly added* `func Test...` lines, builds a regex from them, and stress-runs just those new tests for 10 minutes:
 
@@ -99,9 +99,9 @@ go test --tags invariants \
 
 Full-suite stress (`scripts/stress.sh`) only runs nightly, and it's tuned per package: state-heavy packages like `metamorphic`, `sstable`, and `wal` get 30 minutes at 75% parallelism, everything else gets 5 minutes at 100%. New code gets hammered for flakiness before it merges, the whole codebase gets hammered nightly, and no PR has to wait for a full-suite stress run to finish. If I only copy one thing from this whole post, it's this: a few lines of shell that catch racy or flaky new tests before they land, without slowing down every PR.
 
-## Sanitizers, pinned carefully
+## Running ASAN and MSAN
 
-Beyond `-race`, the nightly `instrumented.yaml` workflow runs ASAN and MSAN:
+Beyond `-race`, the nightly `instrumented.yaml` workflow runs ASAN and MSAN, AddressSanitizer and MemorySanitizer, the C/C++ memory error detectors. Both matter here because Pebble uses cgo; `-race` only sees Go code:
 
 ```makefile
 testasan: testflags += -asan -timeout 20m
@@ -115,27 +115,6 @@ testmsan: TAGS += slowbuild
 testmsan: test
 ```
 
-The ASAN job runs on `ubuntu-22.04` specifically, not `ubuntu-latest`, with a comment explaining why:
-
-```yaml
-linux-asan:
-  # We have seen crashes with 24.04 that don't reproduce with 22.04 and are
-  # likely some asan bug triggered by a specific kernel (#5342).
-  runs-on: ubuntu-22.04
-```
-
-Good reminder that sanitizer CI is more fragile to OS/kernel version than regular test CI, and pinning the runner image explicitly (with a comment pointing at the issue) saves whoever hits this next from re-debugging it.
-
-## A few smaller ideas
-
-`test-s390x-qemu` doesn't need real s390x hardware. It runs `golang:1.25` under `--platform=linux/s390x` via Docker plus `qemu-user-static` on a normal x86 runner, which is a cheap way to get big-endian coverage.
-
-The PR coverage workflow (`code-cover-gen.yaml`) diffs changed `.go` files to find changed packages, then runs coverage on just those packages before and after the PR's commits, publishing both so reviewers see the delta. It runs with no secrets, since PR code is untrusted, and a separate `code-cover-publish.yaml` triggered by `workflow_run` does the actual GCS upload where secrets are available. That's the usual split when something needs secrets but has to process untrusted PR content.
-
-CockroachDB also maintains a Go compiler fork, and `run-tests-with-custom-go.sh` clones it, checks out a pinned commit, builds it from source (`make.bash`), caches the built toolchain by commit SHA, and runs Pebble's tests against that custom `go` binary via `GOROOT` override.
-
-And after `make generate` or `make format`, `check-workspace-clean.sh` just asserts `git status --porcelain` is empty. No bespoke diff tool needed, git already knows if generated code or formatting changed something you didn't commit.
-
-## What I'm actually taking from this
+## What I'm stealing
 
 The stress-the-diff script and the workspace-dirty check are both a handful of shell lines, no new infrastructure, and they catch a real class of bug (flaky new tests, forgotten codegen) before merge. Those are going in my own projects first. The metamorphic and crossversion machinery is a bigger investment, but it's worth understanding if I ever build something where "correct" means "internally consistent" rather than "matches a fixture."
