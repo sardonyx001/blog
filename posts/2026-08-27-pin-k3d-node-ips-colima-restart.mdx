@@ -1,0 +1,265 @@
+---
+title: "Pinning k3d node IPs so a Colima restart doesn't break your cluster"
+date: 2026-08-27
+tags: [k3d, colima, kubernetes, terraform]
+---
+
+# Pinning k3d node IPs so a Colima restart doesn't break your cluster
+
+I've got a local multi-cluster setup: three k3d clusters (`karmada-host`, `cluster-a`,
+`cluster-b`) sharing one Docker bridge network so they can reach each other by IP. It's
+been fine for weeks. Then I did a completely mundane `colima stop` before bed and
+`colima start` the next morning, and the whole thing was on fire. `karmada-host` wouldn't
+even boot. This is the writeup of chasing that down to the actual root cause and fixing
+it properly instead of writing a "just restart it" script.
+
+## The symptom
+
+After `colima start`, `karmada-host`'s k3s process refused to come up:
+
+```text
+failed to start networking: unable to initialize network policy controller:
+error getting node subnet: failed to find interface with specified node ip
+```
+
+`cluster-a` and `cluster-b` came back fine that time, which was the first clue this
+wasn't deterministic — it depended on exactly which IP each container happened to draw
+on that boot.
+
+## Root cause: Docker doesn't guarantee a container keeps its IP across a daemon restart
+
+All three containers sit on one user-defined bridge network (`karmada-mesh`, fixed
+subnet `172.28.0.0/24`). Docker allocates IPs on that network dynamically, in whatever
+order containers come up — there's no pinning unless you ask for it. `colima stop` shuts
+down the whole VM (and therefore the whole Docker daemon), and when it comes back, the
+IPAM allocation order isn't guaranteed to match last time. So `karmada-host` might get
+`172.28.0.5` one day and `172.28.0.4` the next.
+
+k3s bakes its own node IP into its persisted state (`/var/lib/rancher/k3s`) the first
+time it ever boots — flannel's subnet lease, the Node object's `InternalIP`, TLS SANs.
+Most of that tolerates a stale IP silently. Flannel's network-policy controller doesn't:
+it does a hard check at startup ("does the interface I remember still have this IP?"),
+and when it doesn't match, it treats that as fatal and shuts networking down entirely.
+That's the exact crash above.
+
+I found the same root cause described by k3d's own maintainers, word for word, in an
+open PR on the project:
+
+> Static IP is currently only supported for nodes with server role. This causes issues
+> when docker decided to give different IPs to the nodes after a host reboot / daemon
+> reload.
+
+So this isn't a Colima quirk — it's a known, named failure mode, and the fix
+(static IP pinning) is literally why that feature exists in k3d.
+
+## Why k3d's own fix doesn't apply here
+
+k3d has a native mechanism for this: set `subnet: <cidr-or-auto>` in the cluster's
+Simple config, and k3d assigns the server node a static IP via Docker's `--ip` at
+container-creation time (before k3s ever boots, so there's no "IP changed under me"
+moment at all). I went and read the actual Go source to confirm this
+(`pkg/config/transform.go`, `pkg/client/cluster.go` in `k3d-io/k3d`):
+
+```go
+// pkg/config/transform.go
+if simpleConfig.Subnet != "" {
+    if simpleConfig.Subnet != "auto" {
+        subnet, err := netip.ParsePrefix(simpleConfig.Subnet)
+        // ...
+        clusterNetwork.IPAM.IPPrefix = subnet
+    }
+    clusterNetwork.IPAM.Managed = true
+}
+```
+
+```go
+// pkg/client/cluster.go
+if node.Role == k3d.ServerRole {
+    if cluster.Network.IPAM.Managed {
+        ip, err := GetIP(ctx, runtime, &cluster.Network)
+        // ...
+        node.IP.Static = true
+        node.IP.IP = ip
+    }
+}
+```
+
+The catch: it explicitly refuses to combine this with a pre-existing external network:
+
+```go
+if cluster.Network.Name != "" && cluster.Network.External && cluster.Network.IPAM.IPPrefix.IsValid() {
+    return fmt.Errorf("cannot specify subnet for exiting network")
+}
+```
+
+And an external, shared network is exactly what I need — that's how `karmada-host`,
+`cluster-a`, and `cluster-b` reach each other at all. So k3d's built-in fix doesn't
+apply to a shared-network topology. Worth knowing before you go looking for a `--pin-ip`
+flag that doesn't exist for this case.
+
+## The fix: dual-home each node, pin the shared interface yourself
+
+The insight that made this click: **flannel only cares about `eth0`** (via
+`--flannel-iface=eth0`). If the shared cross-cluster network is a *second* interface
+instead of the primary one, pinning it can never touch anything flannel looks at, and
+the crash becomes structurally impossible — not just less likely.
+
+So:
+
+1. **Each cluster gets its own private network**, created by k3d itself with
+   `subnet: auto` in its Simple config. This activates k3d's native static-IP
+   assignment for the server node — that's `eth0`, and it's now genuinely stable across
+   restarts because k3d pins it before the container's first boot.
+
+2. **The shared network becomes a second interface**, attached *after* the cluster
+   exists, with a fixed IP we choose ourselves via plain Docker:
+
+```bash
+docker network connect --ip 172.28.0.11 karmada-mesh k3d-cluster-a-server-0
+```
+
+Terraform version (idempotent — only reconnects if the current IP doesn't match):
+
+```hcl
+resource "null_resource" "pin_mesh_ip" {
+  for_each = {
+    cluster_a = { cluster = "cluster-a", id = k3d_cluster.cluster_a.id }
+    # ...
+  }
+
+  triggers = {
+    cluster_id = each.value.id
+    pinned_ip  = local.mesh_ips[each.key]
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      CONTAINER="k3d-${each.value.cluster}-server-0"
+      DESIRED_IP="${local.mesh_ips[each.key]}"
+      CURRENT_IP=$(docker inspect "$CONTAINER" \
+        --format '{{if index .NetworkSettings.Networks "karmada-mesh"}}{{(index .NetworkSettings.Networks "karmada-mesh").IPAddress}}{{end}}')
+      if [ "$CURRENT_IP" != "$DESIRED_IP" ]; then
+        docker network disconnect karmada-mesh "$CONTAINER" 2>/dev/null || true
+        docker network connect --ip "$DESIRED_IP" karmada-mesh "$CONTAINER"
+      fi
+    EOT
+  }
+}
+```
+
+Once a container is attached to a network with an explicit `--ip`, Docker treats that as
+a real reservation for that container, not a first-come-first-served pool draw — it
+persists across restarts the same way k3d's own native pinning does.
+
+The k3d Simple config for each cluster just drops the shared `network:` field entirely
+and adds `subnet: auto`:
+
+```yaml
+apiVersion: k3d.io/v1alpha5
+kind: Simple
+metadata:
+  name: cluster-a
+subnet: auto   # <- was: network: karmada-mesh
+options:
+  k3s:
+    extraArgs:
+      - arg: "--flannel-iface=eth0"   # now genuinely stable
+        nodeFilters: [server:*]
+```
+
+## The gotcha this created: `--tls-san=0.0.0.0` is not a wildcard
+
+After switching to dual-homing, Karmada couldn't reach the member clusters anymore —
+new error, different layer:
+
+```text
+tls: failed to verify certificate: x509: certificate is valid for
+0.0.0.0, 10.43.0.1, 127.0.0.1, 172.20.0.3, ::1, not 172.28.0.11
+```
+
+I'd had `--tls-san=0.0.0.0` on these clusters for a while, on the assumption that it
+made the cert valid for any IP. Turns out that's just wrong — Go's TLS stack treats
+`0.0.0.0` as one specific, literal SAN entry, not a wildcard. It "worked" before purely
+by accident: k3s auto-adds whatever IP its primary interface has as a SAN at boot, and
+in the single-homed setup, that primary interface *was* the mesh IP. Once the mesh IP
+moved to a secondary interface (attached after k3s already booted), it was never in the
+cert's SAN list at all.
+
+Fix: list the actual pinned IP explicitly.
+
+```yaml
+options:
+  k3s:
+    extraArgs:
+      - arg: "--tls-san=172.28.0.11"   # the pinned mesh IP, explicitly
+        nodeFilters: [server:*]
+      - arg: "--tls-san=0.0.0.0"       # harmless to keep, just not sufficient alone
+        nodeFilters: [server:*]
+```
+
+Since I already know the pinned IPs at plan time (they're just Terraform locals), this
+is a one-line addition per cluster.
+
+## Bonus lesson: Terraform `null_resource` only remembers "did I run", not "is this still true"
+
+Along the way I also hit a smaller, related trap. Several `local-exec` provisioners in
+this setup (cluster registration, namespace propagation, shared infra) had no `triggers`
+block at all. Terraform doesn't re-run a resource just because reality changed
+underneath it — only when something in its own `triggers` map changes. No triggers means
+"ran once, done forever," even across a full cluster recreation.
+
+The fix is the same shape everywhere: give the resource something that changes when the
+thing it depends on actually changes.
+
+```hcl
+resource "null_resource" "register_cluster_a" {
+  triggers = {
+    cluster_a_id     = var.cluster_a_id           # k3d_cluster.cluster_a.id -- changes if replaced
+    kubeconfig_ready = null_resource.extract_kubeconfig.id  # chains through dependents too
+  }
+  # ...
+}
+```
+
+Once every resource in the chain had a real identity signal in its triggers, a plain
+`terraform apply` — no manual `terraform taint` — correctly detected and re-ran
+everything downstream of a recreated cluster.
+
+## Verifying it actually works
+
+The only test that matters here is the literal thing that broke it:
+
+```bash
+docker inspect k3d-karmada-host-server-0 k3d-cluster-a-server-0 k3d-cluster-b-server-0 \
+  --format '{{.Name}}: {{(index .NetworkSettings.Networks "karmada-mesh").IPAddress}}'
+# k3d-karmada-host-server-0: 172.28.0.10
+# k3d-cluster-a-server-0:    172.28.0.11
+# k3d-cluster-b-server-0:    172.28.0.12
+
+colima stop
+colima start
+
+docker inspect k3d-karmada-host-server-0 k3d-cluster-a-server-0 k3d-cluster-b-server-0 \
+  --format '{{.Name}}: {{(index .NetworkSettings.Networks "karmada-mesh").IPAddress}}'
+# same three IPs, unchanged
+```
+
+All three nodes came back `Ready`, Karmada's cluster registrations stayed valid with no
+re-registration, and `terraform plan` reported zero drift. No crash, no manual fixup, no
+heal script needed — just a real restart that didn't break anything.
+
+## Lessons learned
+
+- "Docker will just reuse the same IP" is not a safe assumption across a full daemon/VM
+  restart — only an explicitly pinned IP is guaranteed stable. This is exactly why k3d
+  built a static-IP feature, not a hypothetical edge case.
+- If a tool's built-in fix has a restriction that doesn't fit your topology (k3d's
+  static IP + external network), look one layer down for the same primitive
+  (`docker network connect --ip`) instead of assuming there's no fix at all.
+- Giving something a *second*, isolated network interface for cross-service traffic can
+  be safer than trying to carefully manage IP changes on the interface something else
+  already depends on (flannel, in this case).
+- `--tls-san=0.0.0.0` is not "valid for any IP." List the actual IPs you need.
+- A Terraform `null_resource` with no `triggers` will never re-run on its own, no matter
+  how stale the thing it created becomes. If a resource depends on something that can
+  change identity, put that identity in `triggers`.
