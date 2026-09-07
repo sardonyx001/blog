@@ -1,0 +1,187 @@
+---
+title: "Setting up Hermes Agent as a persistent Discord bot on a VPS, using an existing Claude subscription"
+date: 2026-09-07
+tags: [hermes-agent, discord, anthropic, systemd]
+---
+
+# Setting up Hermes Agent as a persistent Discord bot on a VPS, using an existing Claude subscription
+
+I wanted an always-on AI agent I could talk to from Discord, running on my own VPS, without paying for a separate Anthropic API key on top of the Claude subscription I already have. [Hermes Agent](https://hermes-agent.nousresearch.com/) (NousResearch's open-source agent, not to be confused with the Hermes tool-calling models) does all of this out of the box — messaging gateway, Discord adapter, and it can reuse Claude Code's own OAuth credentials. Here's the whole path, including the one gotcha that took the longest to track down.
+
+## Install Hermes on the VPS
+
+One-liner, works on any Linux/macOS/WSL2 box:
+
+```bash
+ssh myvps 'curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash'
+```
+
+This drops everything under `~/.hermes/` (config, `.env`, sessions, logs) and the actual code checkout under `~/.hermes/hermes-agent`, with the `hermes` binary symlinked into `~/.local/bin`. It also syncs ~60 bundled skills. If you're doing this over a non-interactive SSH command (like above), the installer skips its setup wizard automatically — you configure things afterwards with `hermes doctor` / `hermes setup` / editing `~/.hermes/.env` directly.
+
+Sanity check:
+
+```bash
+hermes --version
+hermes doctor
+```
+
+`hermes doctor` runs ~40 parallel connectivity checks and tells you what's missing (API keys, system deps, etc.) — good first stop after any change.
+
+## Point it at your Claude subscription instead of an API key
+
+This was the pleasant surprise. If you already use the `claude` CLI (Claude Code) on the box and it's logged in, Hermes auto-detects those credentials — no `ANTHROPIC_API_KEY` needed:
+
+```bash
+hermes -z 'Reply with exactly: PONG' --provider anthropic --model claude-sonnet-4-6
+```
+
+That alone worked immediately, because Hermes reads `~/.claude/.credentials.json` directly (the same file `claude` itself writes on login). Check what it picked up with:
+
+```bash
+hermes auth list
+```
+
+```text
+anthropic (2 credentials):
+  #1  CLAUDE_CODE_OAUTH_TOKEN oauth   env:CLAUDE_CODE_OAUTH_TOKEN ←
+  #2  claude_code          oauth   claude_code
+```
+
+Set your preferred default model/provider once in `~/.hermes/config.yaml`:
+
+```yaml
+model:
+  default: "anthropic/claude-sonnet-5"
+  provider: "auto"   # resolves from the model name prefix
+```
+
+One honest caveat from Nous's own docs: the *`hermes model` → Anthropic OAuth* flow is officially described as requiring a Claude **Max** plan plus purchased extra-usage credits — Pro accounts "shouldn't" work through that path. In practice, the auto-detected Claude Code credential file worked fine end to end for me on a Pro plan (tool calls, terminal, web search, all functional). Your mileage may vary depending on Anthropic's current billing rules for third-party OAuth clients — keep an eye out for auth or billing errors if you lean on this heavily.
+
+## Create the Discord bot
+
+Hermes can't do this part for you — it needs your Discord account:
+
+1. [Discord Developer Portal](https://discord.com/developers/applications) → **New Application**, name it whatever.
+2. Left sidebar → **Bot** → under **Privileged Gateway Intents**, enable:
+   - **Server Members Intent**
+   - **Message Content Intent** — without this the bot connects but every message it receives has empty text. This is *the* #1 reason a Discord bot "doesn't respond."
+3. Still on the Bot page → **Reset Token** → copy it immediately (shown once).
+4. Left sidebar → **Installation** → Guild Install → Discord Provided Link → scopes `bot` + `applications.commands`, permissions: View Channels, Send Messages, Read Message History, Attach Files, Embed Links.
+5. In Discord itself: **Settings → Advanced → Developer Mode ON**, then right-click your own name → **Copy User ID**. Hermes uses this to authorize who can talk to it.
+
+If you don't want to go through the Installation tab, you can build the invite URL manually. The bot's application/client ID is actually embedded in the token itself — it's the base64-encoded first segment before the first dot:
+
+```bash
+python3 -c "
+import base64
+s = 'YOUR_TOKEN_FIRST_SEGMENT'
+s += '=' * (-len(s) % 4)   # re-pad for base64
+print(base64.b64decode(s).decode())
+"
+```
+
+Then the invite link is:
+
+```text
+https://discord.com/oauth2/authorize?client_id=<that_id>&scope=bot+applications.commands&permissions=274878286912
+```
+
+## Wire the bot token into Hermes
+
+Add both required values to `~/.hermes/.env`:
+
+```bash
+DISCORD_BOT_TOKEN=your-bot-token
+DISCORD_ALLOWED_USERS=your-discord-user-id
+```
+
+Without `DISCORD_ALLOWED_USERS` (or `DISCORD_ALLOWED_ROLES`, or an explicit allow-all flag), Hermes fails closed by default — it connects to Discord fine but silently denies every inbound message, which looks identical to "bot is broken" if you don't know to check for it.
+
+Quick foreground test before wiring up a service:
+
+```bash
+hermes gateway run
+```
+
+Log should show:
+
+```text
+INFO gateway.run: Connecting to discord...
+INFO hermes_plugins.discord_platform.adapter: [Discord] Connected as YourBotName#1234
+INFO gateway.run: ✓ discord connected
+```
+
+Ctrl-C to stop once confirmed.
+
+## Run it forever with a systemd user service
+
+```bash
+hermes gateway install --start-now --start-on-login
+```
+
+This creates `~/.config/systemd/user/hermes-gateway.service`, enables it, starts it, and — importantly — enables **systemd linger** for your user, which means the service keeps running even after your SSH session ends and even across reboots, without needing to be logged in.
+
+```bash
+hermes gateway status
+# or the raw systemd view:
+systemctl --user status hermes-gateway
+journalctl --user -u hermes-gateway -f
+```
+
+## The gotcha: systemd services don't see your shell's exported env vars
+
+Everything above worked perfectly from the CLI. The moment I actually DMed the bot on Discord, it replied:
+
+```text
+⚠️ Provider authentication failed. Check the configured credentials; raw provider details are in the gateway logs.
+```
+
+But `hermes auth list` and every interactive `hermes -z` test over SSH kept working fine. The difference: my `CLAUDE_CODE_OAUTH_TOKEN` was exported with fish's `set -gx` in `~/.config/fish/config.fish`. That line only runs for interactive/login shells — every SSH command I ran was launched through a login fish shell, so it always had the token. But `hermes gateway install` runs the gateway as a **systemd `--user` service**, spawned directly by `systemd --user`, which never sources any shell rc file. You can see exactly what a unit's environment actually looks like with:
+
+```bash
+systemctl --user show hermes-gateway -p Environment
+```
+
+— which showed a clean `PATH` and nothing Claude-related. Hermes fell back to its second credential (the `~/.claude` file auto-detect), which apparently doesn't get picked up correctly at gateway boot, and auth failed.
+
+The fix: don't rely on shell rc files for anything a systemd service needs. Put the credential directly in Hermes's own env file, which both the CLI and the gateway read regardless of shell:
+
+```bash
+echo "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-..." >> ~/.hermes/.env
+hermes gateway restart
+```
+
+After that, `journalctl` showed a clean `✓ discord connected` with no auth warnings, and messages started going through.
+
+**General lesson**, applicable well beyond Hermes: if a systemd unit (user or system) needs a credential, "I exported it in my shell config" doesn't count from the service's point of view. Put it in `Environment=`/`EnvironmentFile=` on the unit, or in whatever env-file mechanism the app itself reads — never assume shell state carries over.
+
+## Making it feel like a real bot, not a robot with a serial number
+
+Two small things that matter for actually using it day to day:
+
+**Rename it.** Discord gives new bots a username like `bot1546332347907969155` by default. Fix it with a direct API call using the bot token — no need to touch the Developer Portal again:
+
+```bash
+curl -s -X PATCH "https://discord.com/api/v10/users/@me" \
+  -H "Authorization: Bot $DISCORD_BOT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"username":"buddy"}'
+```
+
+**Make it respond without @mentions.** By default Hermes only replies in server channels when directly tagged (DMs always work). For a private server where you want it to just participate normally, turn that off in `~/.hermes/.env`:
+
+```bash
+DISCORD_REQUIRE_MENTION=false
+DISCORD_AUTO_THREAD=false   # otherwise every message spawns a new thread
+hermes gateway restart
+```
+
+`DISCORD_REQUIRE_MENTION=false` is global across every server the bot is in, not scoped to one guild — fine for a single private server, but worth knowing if you ever add the bot elsewhere.
+
+## The whole stack, end to end
+
+- `curl | bash` installer → `~/.hermes/` config + venv, `hermes` on `PATH`.
+- Claude Code's own OAuth credential file, auto-detected — no separate `ANTHROPIC_API_KEY`.
+- Discord bot created manually in the Developer Portal (Message Content + Server Members intents are non-negotiable), token + your user ID dropped into `~/.hermes/.env`.
+- `hermes gateway install --start-now --start-on-login` → systemd `--user` service with linger enabled, survives logout and reboot.
+- Any credential the *service* needs goes in `~/.hermes/.env`, never just a shell rc file — that's the one thing that silently breaks the moment you move from "testing over SSH" to "actually running as a service."
