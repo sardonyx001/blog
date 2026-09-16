@@ -1,0 +1,52 @@
+---
+title: "VSCode's nextEditor cycles tabs across all split groups, nextEditorInGroup doesn't"
+date: 2026-09-16
+tags: [vscode, keybindings, productivity]
+---
+
+# VSCode's nextEditor cycles tabs across all split groups, nextEditorInGroup doesn't
+
+I wanted `Cmd+[` and `Cmd+]` to cycle through every open tab — across all split editor columns — in VSCode. Turns out there are three different commands and only one of them actually does what I wanted.
+
+## The three commands and what they actually do
+
+**`workbench.action.focusNextGroup` / `focusPreviousGroup`**
+
+Moves focus between split groups (columns or rows), not tabs. If you have two split columns with 5 tabs each, this just jumps your cursor between the two columns. Not what I wanted.
+
+**`workbench.action.nextEditorInGroup` / `previousEditorInGroup`**
+
+Cycles through tabs within the currently focused group only. Hits the last tab and stops — doesn't wrap into the next group. Also not what I wanted.
+
+**`workbench.action.nextEditor` / `workbench.action.previousEditor`**
+
+This one cycles through every open editor tab across every group in positional order. Last tab of group 1 wraps into the first tab of group 2. This is the one.
+
+## The keybindings
+
+`Cmd+[` and `Cmd+]` default to outdent/indent lines in the editor, so those need to be explicitly unbound too, otherwise VSCode will fire both actions:
+
+```json
+{
+    "key": "cmd+[",
+    "command": "workbench.action.previousEditor"
+},
+{
+    "key": "cmd+]",
+    "command": "workbench.action.nextEditor"
+},
+{
+    "key": "cmd+[",
+    "command": "-editor.action.outdentLines",
+    "when": "editorTextFocus && !editorReadonly"
+},
+{
+    "key": "cmd+]",
+    "command": "-editor.action.indentLines",
+    "when": "editorTextFocus && !editorReadonly"
+}
+```
+
+Add these to `keybindings.json` (`Cmd+Shift+P` → "Open Keyboard Shortcuts (JSON)"). VSCode picks up the file live — no restart needed.
+
+If you still want indent/outdent, `Tab` / `Shift+Tab` with a selection works fine as a replacement.
