@@ -6,21 +6,24 @@ tags: [vscode, keybindings, productivity]
 
 # VSCode's nextEditor cycles tabs across all split groups, nextEditorInGroup doesn't
 
-I wanted `Cmd+[` and `Cmd+]` to cycle through every open tab — across all split editor columns — in VSCode. Turns out there are three different commands and only one of them actually does what I wanted.
+I wanted `Cmd+[` and `Cmd+]` to cycle through every open tab, across all split editor columns in VSCode. 
+Turns out there are three different commands and only one of them actually does what I wanted.
 
 ## The three commands and what they actually do
 
 **`workbench.action.focusNextGroup` / `focusPreviousGroup`**
 
-Moves focus between split groups (columns or rows), not tabs. If you have two split columns with 5 tabs each, this just jumps your cursor between the two columns. Not what I wanted.
+Moves focus between split groups (columns or rows), not tabs. If you have two split columns with 5 tabs each, this just jumps your cursor between the two columns.
 
 **`workbench.action.nextEditorInGroup` / `previousEditorInGroup`**
 
-Cycles through tabs within the currently focused group only. Hits the last tab and stops — doesn't wrap into the next group. Also not what I wanted.
+Cycles through tabs within the currently focused group only. Hits the last tab and stops, doesn't wrap into the next group.
 
 **`workbench.action.nextEditor` / `workbench.action.previousEditor`**
 
-This one cycles through every open editor tab across every group in positional order. Last tab of group 1 wraps into the first tab of group 2. This is the one.
+This one cycles through every open editor tab across every group in positional order. Last tab of group 1 wraps into the first tab of group 2. 
+
+This is the one we want.
 
 ## The keybindings
 
@@ -48,5 +51,3 @@ This one cycles through every open editor tab across every group in positional o
 ```
 
 Add these to `keybindings.json` (`Cmd+Shift+P` → "Open Keyboard Shortcuts (JSON)"). VSCode picks up the file live — no restart needed.
-
-If you still want indent/outdent, `Tab` / `Shift+Tab` with a selection works fine as a replacement.
