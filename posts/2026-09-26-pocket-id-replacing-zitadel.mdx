@@ -1,0 +1,137 @@
+---
+title: "Ditching Zitadel for Pocket ID: a passkey-only OIDC provider that actually fits in RAM"
+date: 2026-09-26
+tags: [homelab, devops, caddy, sso, oidc, security]
+---
+
+# Ditching Zitadel for Pocket ID: a passkey-only OIDC provider that actually fits in RAM
+
+Zitadel had been running my SSO for a few months — full OIDC provider, org/multi-tenant
+model, the works. It also OOM-killed itself (well, its Login V2 UI container did) at
+6.5GB RSS one afternoon while I wasn't even looking at it. For a box with 11GB total RAM
+running two dozen other containers, that's not a good trade for "one person logs into a
+homelab dashboard."
+
+So: rip it out, replace it with something built for exactly this use case.
+
+## Why Pocket ID
+
+[Pocket ID](https://pocket-id.org) is a Go backend + SvelteKit frontend, SQLite storage,
+single Docker container, no separate database service. It's a real OIDC-certified
+provider — not an auth proxy pretending to be one — but scoped down to what a homelab
+actually needs: register OAuth clients, manage users, log in with a passkey. No SAML, no
+LDAP federation, no org hierarchy.
+
+The headline feature is that passkeys (WebAuthn/FIDO2) are the *only* real login method.
+No password database to leak, no password to phish — the private key never leaves your
+phone or password manager, the server only ever sees the public half. Sign in is Face ID
+on your phone, full stop.
+
+Idle memory: **9.45MB** in the container (measured via `docker stats`, not a marketing
+number). Zitadel's Login UI alone had ballooned past 6.5GB.
+
+## The gotcha nobody's docs mention: circular HTTPS
+
+My Caddy setup uses [caddy-security](https://github.com/greenpau/caddy-security) for the
+SSO portal, with a generic OIDC identity provider block pointing at whatever's issuing
+tokens. The natural thing to do is point `metadata_url` at
+`https://auth.jamell.dev/.well-known/openid-configuration` — the same public URL a
+browser would hit.
+
+That doesn't work, and won't for any Caddy setup doing this. Caddy needs to fetch that
+metadata *while starting up*, before its own HTTPS listener is even bound. Pointing it at
+your own HTTPS domain is a circular dependency: Caddy can't reach itself because it isn't
+up yet.
+
+```
+Error: loading initial config: ... failed to fetch metadata for OAuth 2.0
+authorization server: Get "https://auth.jamell.dev/.well-known/openid-configuration": EOF
+```
+
+The fix (which, credit due, was already solved for Zitadel in this setup via a small Go
+sidecar proxy — I just had to adapt it): run a tiny internal proxy inside the Caddy
+container that forwards to Pocket ID directly over the Docker network
+(`http://pocketid:1411`), sets the right `Host` header, and — this part matters —
+**rewrites the `jwks_uri` field in the discovery document** to point back at itself. Why?
+Because the discovery doc it fetches from Pocket ID says
+`"jwks_uri": "https://auth.jamell.dev/.well-known/jwks.json"` — that's *also* a call back
+through Caddy's own HTTPS, so without the rewrite you just trade one circular dependency
+for another one two steps later.
+
+```go
+// Rewrite jwks_uri in the OIDC discovery document so caddy-security
+// fetches JWT keys via this proxy at startup rather than via HTTPS
+// (which would require Caddy to already be running — a circular dep).
+if strings.Contains(r.RequestURI, ".well-known/openid-configuration") {
+    body = bytes.ReplaceAll(
+        body,
+        []byte(`"https://`+host+`/.well-known/jwks.json"`),
+        []byte(`"`+self+`/.well-known/jwks.json"`),
+    )
+}
+```
+
+The container's entrypoint script starts this proxy in the background, then blocks until
+it can successfully reach Pocket ID before handing off to `caddy run`:
+
+```sh
+/usr/local/bin/pocketid-proxy &
+
+echo "Waiting for Pocket ID OIDC endpoint..."
+until wget -q -O- --timeout=3 http://localhost:8079/.well-known/openid-configuration \
+    2>/dev/null | grep -q '"issuer"'; do
+    sleep 2
+done
+echo "Pocket ID ready. Starting Caddy..."
+
+exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+```
+
+## Setting up the OIDC client
+
+In Pocket ID's admin UI (`/settings/admin/oidc-clients`), the callback URL for
+caddy-security follows a predictable pattern based on the realm name you pick in the
+Caddyfile:
+
+```
+https://sso.jamell.dev/oauth2/<realm-name>/authorization-code-callback
+```
+
+I initially left the realm named `zitadel` out of laziness (didn't want to re-register
+the client mid-migration), which meant every login screen and callback URL still said
+"zitadel" for a while. Renaming it later meant: update the realm name in three spots in
+the Caddyfile (`oauth identity provider`, `enable identity provider`, `set auth url`),
+*and* update the registered callback URL in Pocket ID to match — miss either side and you
+get a blunt, unambiguous error:
+
+```
+The redirect_uri 'https://sso.jamell.dev/oauth2/zitadel/authorization-code-callback'
+is not registered for this client.
+```
+
+Good error message, at least — tells you exactly what's mismatched.
+
+## One more thing: healthchecks don't need to leave the box
+
+Unrelated to Pocket ID directly, but a bug this migration surfaced: my `home.jamell.dev`
+dashboard health-checks every service every 15 seconds. Those checks were hitting the
+*public* domain for each app (`https://pocs.jamell.dev`, etc.) — which meant every single
+healthcheck round-tripped through Caddy's SSO wall from a server-to-server request with
+no session cookie, generating a wall of `"no token found"` errors in the logs for no
+reason. The checker and the checked app are containers on the same Docker network; there
+was never a reason for that traffic to leave the box. Fixed by adding a `check_url` field
+pointing at the internal container address (`http://blog:3000`, `http://arr-sonarr:8989`,
+etc.), separate from the public `url` shown in the UI.
+
+## Net result
+
+- Zitadel + its Postgres + Login UI: gone, ~150-200MB+ typical RSS between the three.
+- Pocket ID: one container, 9.45MB.
+- Passkey login from my phone, no password anywhere in the system.
+- Same Caddy `authorize with sso_only` policy gating `home`, `pocs`, `registry`,
+  `monitor`, `suwayomi`, `sonarr`, `prowlarr`, and Umami's dashboard — zero changes
+  needed on the app side of the migration, only the identity provider underneath it.
+
+If you're running caddy-security for a single-user or small-group homelab and don't need
+SAML or a multi-tenant org model, Pocket ID is a much better fit for the actual job than
+a full enterprise-grade IdP.
