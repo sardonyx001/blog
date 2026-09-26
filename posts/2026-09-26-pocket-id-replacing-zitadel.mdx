@@ -1,137 +1,174 @@
 ---
-title: "Ditching Zitadel for Pocket ID: a passkey-only OIDC provider that actually fits in RAM"
+title: "How to set up Pocket ID: passkey login for your self-hosted apps"
 date: 2026-09-26
-tags: [homelab, devops, caddy, sso, oidc, security]
+tags: [homelab, selfhosted, sso, guide]
 ---
 
-# Ditching Zitadel for Pocket ID: a passkey-only OIDC provider that actually fits in RAM
+# How to set up Pocket ID: passkey login for your self-hosted apps
 
-Zitadel had been running my SSO for a few months — full OIDC provider, org/multi-tenant
-model, the works. It also OOM-killed itself (well, its Login V2 UI container did) at
-6.5GB RSS one afternoon while I wasn't even looking at it. For a box with 11GB total RAM
-running two dozen other containers, that's not a good trade for "one person logs into a
-homelab dashboard."
+If you're running a handful of self-hosted apps on a VPS or home server, you've probably
+felt this pain: every app wants its own login, its own password, its own "forgot
+password" flow. The fix is single sign-on (SSO) — log in once, get into everything.
 
-So: rip it out, replace it with something built for exactly this use case.
+The usual SSO tools (Keycloak, Authentik, Zitadel) are built for companies with hundreds
+of users and complex permission structures. Running one for yourself is like using a
+freight truck to move a single box. **Pocket ID** is the opposite: a small, self-hosted
+login server built specifically for solo/small homelab use, where you sign in with a
+passkey (Face ID, fingerprint, or a security key) instead of a password.
 
-## Why Pocket ID
+This guide walks through installing it, connecting your first app, and the couple of
+gotchas that trip people up.
 
-[Pocket ID](https://pocket-id.org) is a Go backend + SvelteKit frontend, SQLite storage,
-single Docker container, no separate database service. It's a real OIDC-certified
-provider — not an auth proxy pretending to be one — but scoped down to what a homelab
-actually needs: register OAuth clients, manage users, log in with a passkey. No SAML, no
-LDAP federation, no org hierarchy.
+## What you get
 
-The headline feature is that passkeys (WebAuthn/FIDO2) are the *only* real login method.
-No password database to leak, no password to phish — the private key never leaves your
-phone or password manager, the server only ever sees the public half. Sign in is Face ID
-on your phone, full stop.
+- One login server for all your self-hosted apps.
+- No passwords anywhere — you sign in with your phone's Face ID/fingerprint, or a
+  password manager that supports passkeys (1Password, Bitwarden, iCloud Keychain, etc.).
+- A single container to run: no separate database to manage, everything lives in one
+  SQLite file.
+- Works with any app or reverse proxy that speaks standard OpenID Connect (OIDC) —
+  Caddy, Nginx, Traefik, or the apps' own built-in OIDC support.
 
-Idle memory: **9.45MB** in the container (measured via `docker stats`, not a marketing
-number). Zitadel's Login UI alone had ballooned past 6.5GB.
+## Step 1: Run the container
 
-## The gotcha nobody's docs mention: circular HTTPS
+Pocket ID ships as a single Docker image. Here's a minimal `docker-compose.yml`:
 
-My Caddy setup uses [caddy-security](https://github.com/greenpau/caddy-security) for the
-SSO portal, with a generic OIDC identity provider block pointing at whatever's issuing
-tokens. The natural thing to do is point `metadata_url` at
-`https://auth.jamell.dev/.well-known/openid-configuration` — the same public URL a
-browser would hit.
+```yaml
+services:
+  pocketid:
+    image: ghcr.io/pocket-id/pocket-id:latest
+    container_name: pocketid
+    restart: unless-stopped
+    environment:
+      APP_URL: https://id.yourdomain.com
+      TRUST_PROXY: "true"
+      ENCRYPTION_KEY: "generate-a-random-32-byte-hex-string-here"
+    volumes:
+      - ./data:/app/backend/data
+    ports:
+      - "1411:1411"
+```
 
-That doesn't work, and won't for any Caddy setup doing this. Caddy needs to fetch that
-metadata *while starting up*, before its own HTTPS listener is even bound. Pointing it at
-your own HTTPS domain is a circular dependency: Caddy can't reach itself because it isn't
-up yet.
+Two things to get right before you start it:
+
+- **`APP_URL` must be the real public HTTPS URL you'll use.** Passkeys are
+  cryptographically tied to the exact domain they were registered on. If you change this
+  domain later, every passkey breaks and everyone has to re-register.
+- **Generate a real `ENCRYPTION_KEY`.** Any random 32-byte hex string works:
+  ```
+  openssl rand -hex 32
+  ```
+
+Then bring it up:
 
 ```
-Error: loading initial config: ... failed to fetch metadata for OAuth 2.0
-authorization server: Get "https://auth.jamell.dev/.well-known/openid-configuration": EOF
+docker compose up -d
 ```
 
-The fix (which, credit due, was already solved for Zitadel in this setup via a small Go
-sidecar proxy — I just had to adapt it): run a tiny internal proxy inside the Caddy
-container that forwards to Pocket ID directly over the Docker network
-(`http://pocketid:1411`), sets the right `Host` header, and — this part matters —
-**rewrites the `jwks_uri` field in the discovery document** to point back at itself. Why?
-Because the discovery doc it fetches from Pocket ID says
-`"jwks_uri": "https://auth.jamell.dev/.well-known/jwks.json"` — that's *also* a call back
-through Caddy's own HTTPS, so without the rewrite you just trade one circular dependency
-for another one two steps later.
+## Step 2: Put it behind HTTPS
 
-```go
-// Rewrite jwks_uri in the OIDC discovery document so caddy-security
-// fetches JWT keys via this proxy at startup rather than via HTTPS
-// (which would require Caddy to already be running — a circular dep).
-if strings.Contains(r.RequestURI, ".well-known/openid-configuration") {
-    body = bytes.ReplaceAll(
-        body,
-        []byte(`"https://`+host+`/.well-known/jwks.json"`),
-        []byte(`"`+self+`/.well-known/jwks.json"`),
-    )
+This is not optional. Passkeys use the WebAuthn browser API, which flatly refuses to work
+over plain HTTP (with one exception: `localhost`, for local testing). Whatever reverse
+proxy you're already using — Caddy, Nginx, Traefik — point a subdomain at the container's
+port 1411 with a real TLS certificate.
+
+A minimal Caddy example:
+
+```
+id.yourdomain.com {
+    reverse_proxy localhost:1411
 }
 ```
 
-The container's entrypoint script starts this proxy in the background, then blocks until
-it can successfully reach Pocket ID before handing off to `caddy run`:
+Caddy handles the certificate automatically. If you're using Nginx or Traefik, the
+concept is the same: real domain, real cert, reverse-proxied to port 1411.
 
-```sh
-/usr/local/bin/pocketid-proxy &
+## Step 3: Create your admin account
 
-echo "Waiting for Pocket ID OIDC endpoint..."
-until wget -q -O- --timeout=3 http://localhost:8079/.well-known/openid-configuration \
-    2>/dev/null | grep -q '"issuer"'; do
-    sleep 2
-done
-echo "Pocket ID ready. Starting Caddy..."
+Visit `https://id.yourdomain.com/setup`. This page is only available until the first
+account exists — as soon as you finish signup, it stops working for anyone else, which is
+the intended safety behavior. Fill in a username and email, and you'll land on a "set up
+your passkey" screen.
 
-exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+**Do this on your phone or laptop, not a text-only automated session** — registering a
+passkey requires you to physically approve it with Face ID, a fingerprint, or a hardware
+key. Register at least two: one you'll use daily (your phone), and a backup (your laptop,
+or a password manager that syncs passkeys) — if you only ever have one passkey and lose
+that device, recovery is a manual admin process.
+
+## Step 4: Register your first app
+
+Every app that wants to use Pocket ID for login needs its own OIDC "client" registered in
+the admin panel. Go to `/settings/admin/oidc-clients` → **Add OIDC Client**.
+
+You'll need to know the callback URL your app or reverse-proxy plugin expects. This
+varies by tool:
+
+- **caddy-security** (Caddy's SSO plugin): `https://your-portal-domain/oauth2/<realm-name>/authorization-code-callback`
+- **oauth2-proxy**: `https://your-app-domain/oauth2/callback`
+- **An app with native OIDC support** (Grafana, Nextcloud, Immich, etc.): check that
+  app's own OIDC settings page — it usually shows you the exact callback URL to paste in.
+
+Enter that URL under **Callback URLs**, save, then open the **Credentials** tab and click
+**Add client secret**. You now have a Client ID and Client Secret — plug those into
+whatever's consuming the login (your reverse proxy config, or the app's own OIDC
+settings), along with Pocket ID's discovery URL:
+
+```
+https://id.yourdomain.com/.well-known/openid-configuration
 ```
 
-## Setting up the OIDC client
+That single URL is enough for most OIDC clients to auto-discover every endpoint they
+need (authorization, token, user info, etc.) — you shouldn't need to hand-enter each one
+separately.
 
-In Pocket ID's admin UI (`/settings/admin/oidc-clients`), the callback URL for
-caddy-security follows a predictable pattern based on the realm name you pick in the
-Caddyfile:
+## Gotcha: if your reverse proxy fetches config at startup
+
+Some reverse-proxy SSO plugins (Caddy's `caddy-security` is one) try to fetch Pocket ID's
+discovery document *while the proxy itself is still starting up* — before its own HTTPS
+is even listening. If you point that startup fetch at your public HTTPS domain, you get a
+circular dependency: the proxy can't reach itself because it isn't up yet, and it fails
+to start entirely.
+
+The fix is to point that specific startup config fetch at Pocket ID's **internal**
+address instead of the public one — e.g., if they're both Docker containers on the same
+network, `http://pocketid:1411/.well-known/openid-configuration` rather than
+`https://id.yourdomain.com/.well-known/openid-configuration`. Everything else (the actual
+browser login flow) still goes through the public HTTPS URL as normal — it's only this
+one startup-time fetch that needs the internal shortcut.
+
+If your reverse proxy doesn't do a startup-time fetch (most don't), you can skip this
+entirely and just use the public URL everywhere.
+
+## Gotcha: callback URL must match exactly
+
+If you ever rename anything — the "realm" name in a Caddy config, the app's domain, the
+client name — double check the callback URL registered in Pocket ID still matches exactly
+what your proxy/app is sending. A mismatch gives you a clear (if blunt) error:
 
 ```
-https://sso.jamell.dev/oauth2/<realm-name>/authorization-code-callback
+The redirect_uri '...' is not registered for this client.
 ```
 
-I initially left the realm named `zitadel` out of laziness (didn't want to re-register
-the client mid-migration), which meant every login screen and callback URL still said
-"zitadel" for a while. Renaming it later meant: update the realm name in three spots in
-the Caddyfile (`oauth identity provider`, `enable identity provider`, `set auth url`),
-*and* update the registered callback URL in Pocket ID to match — miss either side and you
-get a blunt, unambiguous error:
+Fix: go back to the OIDC client in Pocket ID's admin panel and update the Callback URL to
+match.
 
-```
-The redirect_uri 'https://sso.jamell.dev/oauth2/zitadel/authorization-code-callback'
-is not registered for this client.
-```
+## What happens if you lose your device
 
-Good error message, at least — tells you exactly what's mismatched.
+Since there's no password fallback by design, plan this before you need it:
 
-## One more thing: healthchecks don't need to leave the box
+- **Register two passkeys minimum** (phone + laptop, or phone + a password manager).
+- If you're still locked out, an admin can issue a one-time login link from the server:
+  ```
+  docker exec pocketid /app/pocket-id one-time-access-token <username>
+  ```
+  This prints a URL valid for one hour that lets you sign in once and register a new
+  passkey.
 
-Unrelated to Pocket ID directly, but a bug this migration surfaced: my `home.jamell.dev`
-dashboard health-checks every service every 15 seconds. Those checks were hitting the
-*public* domain for each app (`https://pocs.jamell.dev`, etc.) — which meant every single
-healthcheck round-tripped through Caddy's SSO wall from a server-to-server request with
-no session cookie, generating a wall of `"no token found"` errors in the logs for no
-reason. The checker and the checked app are containers on the same Docker network; there
-was never a reason for that traffic to leave the box. Fixed by adding a `check_url` field
-pointing at the internal container address (`http://blog:3000`, `http://arr-sonarr:8989`,
-etc.), separate from the public `url` shown in the UI.
+## Should you do this?
 
-## Net result
-
-- Zitadel + its Postgres + Login UI: gone, ~150-200MB+ typical RSS between the three.
-- Pocket ID: one container, 9.45MB.
-- Passkey login from my phone, no password anywhere in the system.
-- Same Caddy `authorize with sso_only` policy gating `home`, `pocs`, `registry`,
-  `monitor`, `suwayomi`, `sonarr`, `prowlarr`, and Umami's dashboard — zero changes
-  needed on the app side of the migration, only the identity provider underneath it.
-
-If you're running caddy-security for a single-user or small-group homelab and don't need
-SAML or a multi-tenant org model, Pocket ID is a much better fit for the actual job than
-a full enterprise-grade IdP.
+If you're the only user (or one of a handful of trusted people) and you're tired of
+juggling separate logins for every self-hosted app, yes — it's a small, fast, low-effort
+addition. If you need SAML, LDAP sync, or per-app user group permissions for a real team,
+Pocket ID intentionally doesn't do that — look at something like Authentik or Keycloak
+instead. But for "I want one login for my homelab," it's hard to beat.
