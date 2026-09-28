@@ -1,0 +1,199 @@
+---
+title: "Build a generic reverse proxy: one Caddy route for any HTTPS site"
+date: 2026-09-27
+tags: [homelab, caddy, selfhosted, guide, security]
+---
+
+# Build a generic reverse proxy: one Caddy route for any HTTPS site
+
+If you self-host enough apps behind Caddy, you eventually hit the same annoyance:
+every new site you want to route through your box means another `.caddy` file, another
+domain, another TLS cert. Most of the time you don't actually need a dedicated subdomain —
+you just want to reach some external host through your own infrastructure (bypass a
+firewall, add your own auth layer in front of a third-party API, keep egress traffic
+consistent, etc).
+
+The fix is a **path-based generic proxy**: one route that takes the target host out of
+the URL path and reverse-proxies to it dynamically. No new Caddy config, ever, for a new
+target.
+
+```
+https://proxy.yourdomain.com/<target-host>/<path>  →  https://<target-host>/<path>
+```
+
+## The core routing trick
+
+Caddy's `reverse_proxy` doesn't let you put a placeholder in an upstream address that
+also has a scheme (`https://{re.target.1}` fails to parse). The workaround: use a bare
+host as the upstream and force TLS with the `transport http { tls }` block instead.
+
+```caddyfile
+(generic_proxy) {
+    @target path_regexp target ^/([a-zA-Z0-9.-]+)(/.*)?$
+    handle @target {
+        uri strip_prefix /{re.target.1}
+        reverse_proxy {re.target.1}:443 {
+            header_up Host {re.target.1}
+            transport http {
+                tls
+            }
+        }
+    }
+    respond "Usage: https://proxy.yourdomain.com/<target-host>/<path>" 400
+}
+```
+
+`path_regexp` captures the first path segment as the target host, `uri strip_prefix`
+removes it before forwarding, and `header_up Host` makes sure the upstream sees the
+right `Host` header (most sites will 404 or reject the request without this, since
+they're expecting their own domain, not yours).
+
+## Why you actually need to gate this
+
+An open proxy like this is a real SSRF and anonymizer risk — anyone could tunnel
+arbitrary traffic through your server, or use it to probe your internal network by
+hostname. Don't ship this open. Two auth paths cover the realistic use cases: a static
+key for scripts, and SSO for browser use.
+
+```caddyfile
+proxy.yourdomain.com {
+    @haskey header X-Proxy-Key your-random-secret-here
+    route @haskey {
+        request_header -X-Proxy-Key
+        import generic_proxy
+    }
+
+    route {
+        authorize with sso_only
+        import generic_proxy
+    }
+}
+```
+
+Generate the secret once (`openssl rand -hex 24`) and treat it like any other credential
+— it's the only thing standing between the internet and your box's egress IP.
+
+**Critical detail people miss: strip your own auth header before forwarding.** If you
+don't, whatever site you're proxying to sees your secret key. `request_header -X-Proxy-Key`
+removes it right after the matcher confirms it's valid, before the request ever reaches
+`reverse_proxy`.
+
+## Adding a real OAuth path (not just a static key)
+
+A static key works, but if you're already running an OIDC provider (Pocket ID, Keycloak,
+Authentik, etc.) for SSO, it's worth wiring in a proper machine-to-machine (M2M) token
+too — useful for anything that can do a real OAuth flow instead of holding a bare secret.
+
+Most self-hosted OIDC providers support the `client_credentials` grant for exactly this:
+a confidential client authenticates with its own `client_id`/`client_secret`, no user or
+browser involved, and gets back a short-lived signed JWT.
+
+```bash
+curl -s -X POST https://auth.yourdomain.com/api/oidc/token \
+  -d grant_type=client_credentials \
+  -d client_id=<your-m2m-client-id> \
+  -d client_secret=<your-m2m-client-secret>
+# {"access_token": "eyJ...", "expires_in": 3599, "token_type": "bearer"}
+```
+
+The natural place to put that token is the `Authorization: Bearer` header — except if
+your proxy is forwarding to an API that *also* needs its own `Authorization` header (its
+own API key, its own bearer token), you've now got two different credentials fighting
+over the same header slot. **Use a dedicated header for your proxy's own auth, and leave
+`Authorization` completely free for whatever the upstream needs.**
+
+```caddyfile
+@hastoken header X-Proxy-Token *
+route @hastoken {
+    jwtauth {
+        jwk_url https://auth.yourdomain.com/.well-known/jwks.json
+        from_header X-Proxy-Token
+        audience_whitelist <your-m2m-client-id>
+        issuer_whitelist https://auth.yourdomain.com
+    }
+    request_header -X-Proxy-Token
+    import generic_proxy
+}
+```
+
+This uses [`ggicci/caddy-jwt`](https://github.com/ggicci/caddy-jwt) — worth calling out
+because **if you're using `caddy-security` for your main SSO portal, its JWT token
+validation is hardcoded to only ever read the `Authorization` header.** It cannot check a
+bearer token sitting in an arbitrary header name like `X-Proxy-Token`. If you need
+that, you need a module that actually supports it — `caddy-jwt`'s `from_header` does,
+plus it can fetch your provider's JWKS live (`jwk_url`), so signing-key rotation on the
+identity provider's side is handled automatically with zero manual key management.
+
+`audience_whitelist` locks acceptance to tokens minted for one specific client — so even
+if the same OIDC provider issues tokens for a dozen other apps, only the one you
+registered for this proxy gets through.
+
+## Full config, three auth paths
+
+Putting it together — static key, M2M token, and SSO, tried in that order, each stripped
+of its own credential before the request reaches the target:
+
+```caddyfile
+proxy.yourdomain.com {
+    @haskey header X-Proxy-Key your-random-secret-here
+    route @haskey {
+        request_header -X-Proxy-Key
+        import generic_proxy
+    }
+
+    @hastoken header X-Proxy-Token *
+    route @hastoken {
+        jwtauth {
+            jwk_url https://auth.yourdomain.com/.well-known/jwks.json
+            from_header X-Proxy-Token
+            audience_whitelist <your-m2m-client-id>
+            issuer_whitelist https://auth.yourdomain.com
+        }
+        request_header -X-Proxy-Token
+        import generic_proxy
+    }
+
+    route {
+        authorize with sso_only
+        import generic_proxy
+    }
+}
+```
+
+`sso_only` here is whatever `caddy-security` (or equivalent) authorization policy you
+already use for your other SSO-gated apps — this proxy just reuses it, no separate setup
+needed for the browser path.
+
+## Using it
+
+```bash
+# static key
+curl -H "X-Proxy-Key: your-random-secret-here" \
+  https://proxy.yourdomain.com/httpbin.org/get
+
+# M2M token
+TOKEN=$(curl -s -X POST https://auth.yourdomain.com/api/oidc/token \
+  -d grant_type=client_credentials \
+  -d client_id=<your-m2m-client-id> \
+  -d client_secret=<your-m2m-client-secret> \
+  | jq -r .access_token)
+curl -H "X-Proxy-Token: $TOKEN" \
+  https://proxy.yourdomain.com/httpbin.org/get
+
+# either auth method + your own token for the upstream, passed through untouched
+curl -H "X-Proxy-Key: your-random-secret-here" \
+  -H "Authorization: Bearer <upstream-api-token>" \
+  https://proxy.yourdomain.com/api.example.com/v1/protected
+```
+
+That last example is the whole point of keeping `Authorization` free: your proxy's auth
+and the target API's auth don't have to be the same credential, or even the same auth
+scheme.
+
+## Limitation worth knowing
+
+The regex here only captures a bare hostname as the first path segment — no port, no
+scheme. If you need to reach something on a non-443 port, or a plain-HTTP-only internal
+service, extend the `path_regexp` to optionally capture `:<port>` and branch the
+`transport` block on whether TLS should apply. Most of the time you won't need it, but
+it's a one-line regex change and a conditional if you do.
